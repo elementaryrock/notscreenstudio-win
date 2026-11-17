@@ -1,0 +1,8 @@
+[toolchain]
+# Pin the MSVC toolchain: the WinRT/Win32 bindings, wgpu's D3D12 backend and the
+# Tauri Windows target all assume MSVC ABI. The machine default is currently
+# stable-x86_64-pc-windows-gnu; this file overrides that for the whole workspace.
+channel = "1.95.0"
+components = ["rustfmt", "clippy"]
+targets = ["x86_64-pc-windows-msvc"]
+profile = "minimal"

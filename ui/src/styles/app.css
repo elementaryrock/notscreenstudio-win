@@ -1,0 +1,143 @@
+/*
+ * Design tokens — direct port of upstream `NSSUI/Editor/Design/EditorTheme.swift`
+ * so the Windows editor reads as the same product.
+ *
+ * Rule (PLAN.md §7.7): the app chrome follows the system light/dark preference,
+ * but the editor surface itself stays dark, exactly as upstream.
+ */
+
+:root {
+  /* Colours (dark theme) */
+  --canvas: #161616; /* white 0.085 */
+  --panel: #202020; /* white 0.125 */
+  --surface: #2b2b2b; /* white 0.17 */
+  --surface-hover: #383838; /* white 0.22 */
+  --stroke: rgba(255, 255, 255, 0.08);
+  --text-primary: rgba(255, 255, 255, 0.92);
+  --text-secondary: rgba(255, 255, 255, 0.62);
+  --text-tertiary: rgba(255, 255, 255, 0.38);
+  --accent: #0a84ff;
+  --playhead: #ff453a;
+  --trim: #ffcc00;
+  --destructive: #ff5a4d;
+  --ok: #30d158;
+
+  /* Corner radii */
+  --radius-sm: 4px;
+  --radius-md: 8px;
+  --radius-lg: 12px;
+
+  /* Spacing */
+  --space-tight: 4px;
+  --space: 8px;
+  --space-loose: 12px;
+  --padding: 12px;
+  --inspector-width: 300px;
+  --topbar-height: 44px;
+
+  /* Type — the system UI font, as upstream uses the system font only. */
+  --font-ui: "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif;
+  --font-mono: "Cascadia Mono", "Consolas", ui-monospace, monospace;
+
+  color-scheme: dark;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  background: var(--canvas);
+  color: var(--text-primary);
+  font-family: var(--font-ui);
+  font-size: 13px;
+  -webkit-font-smoothing: antialiased;
+  /* The app is a recorder first: never select chrome text by accident. */
+  user-select: none;
+}
+
+/* ---- Stage 0 bootstrap screen (removed once the Home screen lands in Stage 9) ---- */
+
+.bootstrap {
+  max-width: 560px;
+  margin: 0 auto;
+  padding: 56px 24px;
+}
+
+.bootstrap h1 {
+  margin: 0;
+  font-size: 22px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+
+.tagline {
+  margin: 6px 0 28px;
+  color: var(--text-secondary);
+}
+
+.card {
+  background: var(--panel);
+  border: 1px solid var(--stroke);
+  border-radius: var(--radius-lg);
+  padding: var(--padding);
+}
+
+.card h2 {
+  margin: 0 0 var(--space);
+  font-size: 13px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-secondary);
+}
+
+.card p {
+  margin: 0 0 var(--space-loose);
+  line-height: 1.55;
+  color: var(--text-secondary);
+}
+
+.facts {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: var(--space-tight) var(--space-loose);
+  margin: 0 0 var(--space-loose);
+  padding: var(--space) 0;
+  border-top: 1px solid var(--stroke);
+  border-bottom: 1px solid var(--stroke);
+}
+
+.facts dt {
+  color: var(--text-tertiary);
+}
+
+.facts dd {
+  margin: 0;
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  color: var(--text-primary);
+}
+
+.status {
+  margin: 0;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.status[data-state="ok"]::before {
+  content: "● ";
+  color: var(--ok);
+}
+
+.status[data-state="error"]::before {
+  content: "● ";
+  color: var(--destructive);
+}

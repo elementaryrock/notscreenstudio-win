@@ -1,0 +1,15 @@
+[package]
+name = "nss-capture"
+description = "Screen, mic and camera capture via Windows Graphics Capture, WASAPI and Media Foundation (replaces NSSCapture)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+# Windows-only. Stage 5 adds: windows (WinRT + Win32), bytemuck.
+[dependencies]
+nss-core = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

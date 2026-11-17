@@ -1,0 +1,53 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/nss-core",
+    "crates/nss-motion",
+    "crates/nss-project",
+    "crates/nss-capture",
+    "crates/nss-input",
+    "crates/nss-render",
+    "crates/nss-export",
+    "src-tauri",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.85"
+license = "MIT"
+repository = "https://github.com/dotslashsimran/notscreenstudio"
+authors = ["notscreenstudio-win contributors"]
+
+[workspace.dependencies]
+# Pure, platform-neutral crates (see PLAN.md §3: these must not link windows/wgpu/tauri).
+nss-core = { path = "crates/nss-core" }
+nss-motion = { path = "crates/nss-motion" }
+nss-project = { path = "crates/nss-project" }
+nss-capture = { path = "crates/nss-capture" }
+nss-input = { path = "crates/nss-input" }
+nss-render = { path = "crates/nss-render" }
+nss-export = { path = "crates/nss-export" }
+
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+anyhow = "1"
+uuid = { version = "1", features = ["v4", "serde"] }
+time = { version = "0.3", features = ["serde", "formatting", "parsing"] }
+parking_lot = "0.12"
+sha2 = "0.10"
+proptest = "1"
+tempfile = "3"
+
+[profile.dev]
+# Debug builds of the renderer are unusably slow; keep some optimisation in deps.
+opt-level = 1
+
+[profile.dev.package."*"]
+opt-level = 2
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = "debuginfo"

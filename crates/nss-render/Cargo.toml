@@ -1,0 +1,12 @@
+[package]
+name = "nss-render"
+description = "wgpu single-pass compositor and render layout (replaces NSSRender/MetalRenderer)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+# Stage 4 adds: wgpu, image, bytemuck, parking_lot (renderer device + atlas).
+[dependencies]
+nss-core = { workspace = true }
+thiserror = { workspace = true }

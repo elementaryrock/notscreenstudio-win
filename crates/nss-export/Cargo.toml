@@ -1,0 +1,17 @@
+[package]
+name = "nss-export"
+description = "60 fps MP4 exporter: frame pump, FFmpeg mux, asset frame source (replaces NSSExport)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+# Stage 7 adds: image (decode for frame sources).
+[dependencies]
+nss-core = { workspace = true }
+nss-motion = { workspace = true }
+nss-render = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

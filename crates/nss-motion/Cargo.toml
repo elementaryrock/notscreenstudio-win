@@ -1,0 +1,15 @@
+[package]
+name = "nss-motion"
+description = "Pure, deterministic motion model: spring camera, cursor smoothing, ripples, zoom planning (port of NSSMotion)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+# HARD RULE (PLAN.md §3): platform-neutral. Motion is a pure function of time.
+[dependencies]
+nss-core = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+proptest = { workspace = true }

@@ -1,0 +1,13 @@
+[package]
+name = "nss-input"
+description = "120 Hz cursor and click logging, cursor-shape detection (replaces NSSInput)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+# Windows-only. Stage 6 adds: windows (Win32 input + DPI).
+[dependencies]
+nss-core = { workspace = true }
+thiserror = { workspace = true }
+parking_lot = { workspace = true }

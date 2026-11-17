@@ -1,0 +1,80 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  # Fast, platform-neutral gate: the deterministic core must stay green on its own.
+  core:
+    name: Core (fmt, clippy, test)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # rust-toolchain.toml pins the version and the msvc target, so no action needed
+      # beyond making sure rustup reads it.
+      - name: Rust version
+        run: rustc --version && cargo --version
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Format
+        run: cargo fmt --all -- --check
+
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: Test
+        run: cargo test --workspace
+
+  # The shell must build and pass its smoke test, which is what bundle.sh guards upstream.
+  app:
+    name: App (build + smoke test)
+    runs-on: windows-latest
+    needs: core
+    steps:
+      - uses: actions/checkout@v4
+      - uses: Swatinem/rust-cache@v2
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: ui/package-lock.json
+
+      - name: Install UI deps
+        run: npm --prefix ui ci
+
+      - name: UI typecheck and build
+        run: |
+          npm --prefix ui run typecheck
+          npm --prefix ui run build
+
+      - name: Build app
+        run: cargo build -p notscreenstudio-win-app
+
+      - name: Smoke test
+        run: cargo run -p notscreenstudio-win-app --bin notscreenstudio -- --smoke-test
+
+  # PLAN.md §7.6: nothing may leave the machine. Fail the build if a network stack appears.
+  privacy:
+    name: No network dependencies
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check Cargo.lock for network crates
+        run: |
+          banned='^(reqwest|hyper|hyper-util|ureq|isahc|curl|curl-sys|surf|attohttpc|tiny_http|async-h1|aws-sdk-.*|opentelemetry.*|sentry.*|segment.*|mixpanel.*)$'
+          # tauri itself links HTTP for its own updater plumbing on some platforms; we
+          # ban them from OUR crates' manifests, which is where a mistake would appear.
+          if grep -REn --include=Cargo.toml "(${banned#^})" crates/ src-tauri/; then
+            echo "::error::A direct dependency on a network stack was added. See PLAN.md §7.6."
+            exit 1
+          fi
+          echo "No direct network dependencies in workspace manifests."
