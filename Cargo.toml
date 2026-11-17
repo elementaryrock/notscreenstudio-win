@@ -14,7 +14,9 @@ members = [
 [workspace.package]
 version = "0.1.0"
 edition = "2021"
-rust-version = "1.85"
+# 1.86 is where f64::next_up/next_down stabilised; the viewport clamp needs them to
+# land the camera exactly on the source edge (see docs/ADR/0009-core-traits.md).
+rust-version = "1.86"
 license = "MIT"
 repository = "https://github.com/dotslashsimran/notscreenstudio"
 authors = ["notscreenstudio-win contributors"]

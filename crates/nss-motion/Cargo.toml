@@ -9,6 +9,8 @@ license.workspace = true
 # HARD RULE (PLAN.md §3): platform-neutral. Motion is a pure function of time.
 [dependencies]
 nss-core = { workspace = true }
+serde = { workspace = true }
+uuid = { workspace = true }
 thiserror = { workspace = true }
 
 [dev-dependencies]

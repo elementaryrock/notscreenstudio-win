@@ -2,14 +2,15 @@
 
 Port of [`dotslashsimran/notscreenstudio`](https://github.com/dotslashsimran/notscreenstudio) (macOS 15, Swift 6 + SwiftUI + Metal, ~14.5k lines across 8 modules plus 499 tests) to a native-feeling Windows desktop app.
 
-Status: **plan, Stage 0 and Stage 1 complete.** Upstream is vendored read-only at `_upstream/` for reference.
+Status: **plan, Stages 0-2 complete.** Upstream is vendored read-only at `_upstream/` for reference.
 
 | Stage | Status |
 |---|---|
 | 0 — Repository and toolchain bootstrap | **done** |
 | 1 — `nss-core` | **done** |
-| 2 — `nss-motion` | next |
-| 3-11 | not started |
+| 2 — `nss-motion` | **done** |
+| 3 — `nss-project` | next |
+| 4-11 | not started |
 
 When a stage lands, flip its row and keep the notes in that stage's section accurate.
 
@@ -181,6 +182,18 @@ Port, field for field, preserving the serialised shape:
 - Determinism: integrate from `t = 0` at a **fixed step**; never read the wall clock. Same `t` ⇒ same `FrameState`, in any order, from any thread.
 
 **Exit:** property tests reproduce `NSSMotionTests` + `ViewportPropertyTests` + `EdgeGapTests`; a fuzz test asserts `frameState(at:)` is order-independent and byte-stable for a fixed seed.
+
+**Status: done** (`crates/nss-motion`, 62 tests: 51 unit + 5 `viewport_guarantee` + 5 `stored_zoom` + 1 `performance`).
+
+Ported: `spring.rs` (analytic `evolve` for all three damping regimes + matrix `SpringStepper`), `motion_tuning.rs` (all upstream defaults and the guard rails: non-finite `simulation_rate` → 240, `max_duration` ≤ 0 → 24 h, `press_scale` clamped `0.1..=1.0`, `max_steps = max_simulation_frames.max(2) - 1`), `viewport.rs`, `zoom_planner.rs`, `spring_motion_model.rs` (fixed-step table, dead-zone follow, idle fade, ripples, `stable_shapes` flicker filter, press squish, `CameraPlanner`/`PressTracker`/`ActivityTracker`/`RawCursor`), `linear_motion_model.rs`, plus the `factory()` seam that preview and export both call so the two cannot drift.
+
+Notes for later stages:
+
+- **`CameraState::clamped_to_source` became a free function in `nss-motion`, not an inherent method** — `CameraState` lives in `nss-core`, which may not grow motion concerns (ADR 0009). `SourceViewport` is reached through the `CameraViewport` trait so renderer code can still write `camera.source_viewport()`.
+- **The clamp is a loop of `next_down`/`next_up` nudges**, not a second `clamp`: `0.5/scale` is not exact, so the naive bound can still leave `center + half` one ULP outside `1.0`. This costs MSRV 1.86 (`f64::next_up`/`next_down`), hence the workspace bump from 1.85.
+- **The simulation table is the determinism contract.** `frame_state` interpolates between two rows of a `Vec<SimFrame>` (36 bytes/row, 240 Hz ⇒ 5.2 MB per 10 minutes, capped by `max_simulation_frames`). A 10-minute recording builds in ~12 ms and looks up in ~0.1 µs (debug build) — up to 30x under the upstream budget.
+- **The strongest guarantee is a test, not a comment.** `tests/viewport_guarantee.rs` replays upstream's property test with adversarial tuning (underdamped springs, `dead_zone` up to 1.5, scales up to 14, 7 source aspects, 3 output aspects, clicks and manual focuses deliberately outside `0..1`) and additionally mirrors `RenderLayout`'s content rect so it checks the corners the renderer actually samples. Keep this test when `nss-render` lands: `nss-render` must reuse `rendered_source_corners`' maths instead of inventing its own.
+- `tests/performance.rs` asserts wall-clock budgets only with `NSS_BENCH=1`, matching upstream; a flaky perf gate in a shared CI VM teaches people to ignore the suite.
 
 ### Stage 3 — `nss-project` (port of `NSSProject`)
 - `.nssproj` bundle = directory with `project.json`, `project.json.bak`, `cursor.json`, media files, thumbnail.
