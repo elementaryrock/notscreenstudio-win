@@ -2,15 +2,16 @@
 
 Port of [`dotslashsimran/notscreenstudio`](https://github.com/dotslashsimran/notscreenstudio) (macOS 15, Swift 6 + SwiftUI + Metal, ~14.5k lines across 8 modules plus 499 tests) to a native-feeling Windows desktop app.
 
-Status: **plan, Stages 0-2 complete.** Upstream is vendored read-only at `_upstream/` for reference.
+Status: **plan, Stages 0-3 complete.** Upstream is vendored read-only at `_upstream/` for reference.
 
 | Stage | Status |
 |---|---|
 | 0 — Repository and toolchain bootstrap | **done** |
 | 1 — `nss-core` | **done** |
 | 2 — `nss-motion` | **done** |
-| 3 — `nss-project` | next |
-| 4-11 | not started |
+| 3 — `nss-project` | **done** |
+| 4 — `nss-render` | next |
+| 5-11 | not started |
 
 When a stage lands, flip its row and keep the notes in that stage's section accurate.
 
@@ -204,6 +205,20 @@ Notes for later stages:
 - Library root `%USERPROFILE%\Videos\notscreenstudio`.
 
 **Exit:** upstream `NSSProjectTests` + `ProjectLibraryTests` + `BackgroundMigrationTests` behaviours reproduced, including "crash during save leaves a loadable project".
+
+**Status: done** (`crates/nss-project`, 70 tests: 58 unit + 7 `background_migration` + 5 `crash_recovery`).
+
+Ported: `atomic_file.rs` (temp + sync + swap, with a Windows retry window), `debounce.rs` (`AutosaveDebouncer` on one worker thread, injectable `DebounceClock` + `ManualClock`), `migrator.rs` (`ProjectMigrator`, v1 wallpaper → mesh), `store.rs` (`FileProjectStore`: create/save/load/cursor track/autosave/list/recents, name sanitising), `library.rs` (`FileProjectLibrary`: summaries, FNV-1a path ids, thumbnails, rename, delete), `recent_projects.rs`, `windows_trash.rs`.
+
+Notes for later stages (full reasoning in **ADR 0010**):
+
+- **`project.json` is written pretty + sorted keys, `cursor.json` compact.** Byte-identical output to the Mac build is *not* promised (Apple writes `"key" : value`); load-compatibility in both directions is, and is what the tests assert.
+- **`nss-project` is `#![deny(unsafe_code)]`, not `forbid`.** The Recycle Bin has no std equivalent, so `windows_trash.rs` holds one `SHFileOperationW` call with an `#[allow(unsafe_code)]` and a safety comment. CI greps for `unsafe` outside that file, so the exemption cannot spread.
+- **The autosave debouncer is a thread, not a runtime.** One worker parks outside the state lock in `clock.wait_until(deadline, epoch)`; the `epoch` counter is what makes that wait interruptible so a new schedule or `Drop` returns immediately. `flush()` and `exclusive()` share the worker's `write_lock`, which is what makes "explicit save wins over an in-flight autosave" true rather than probable.
+- **Windows quirks are in the API, not hidden:** `ProjectError::is_transient()` for sharing violations (Explorer/Defender hold files for milliseconds), `sanitize_name` strips reserved device names and trailing dots, extensions are compared case-insensitively, and `path_key` folds case so two spellings share one autosave timer.
+- **Thumbnails go through the `Thumbnailer` trait** (`FfmpegThumbnailer` in production, `NoopThumbnailer` in tests) because FFmpeg is not on CI and because Stage 4 may substitute the GPU rasteriser. Same seam for `Trash`.
+- **Gap left open:** the library root is `%USERPROFILE%\Videos\notscreenstudio` from the environment, so a Videos folder redirected to OneDrive is not followed. Stage 8 replaces it with `SHGetKnownFolderPath(FOLDERID_Videos)`.
+- **`--smoke-test` now creates a real bundle** in a scratch directory (save → load → cursor track → library listing) instead of only round-tripping JSON, so a broken bundle layout fails the build.
 
 ### Stage 4 — `nss-render` (port of `NSSRender`) — the long pole
 1. **WGSL translation of `Shaders.swift`.** One full-screen triangle, one fragment entry point, same pass order (background → screen shadow → screen content → ripples → cursor → camera bubble → sRGB encode + dither on background only). Same `Slot` enum, generated into WGSL `#define`-equivalents (const array indices) so the Rust uniform writer and the shader cannot drift. Translate `oklabToLinear`, `sdRoundBox`, `erfApprox`, `softShadow`, `sampleFootprint`, the trilinear mip sampling, and the linear-light blending exactly.

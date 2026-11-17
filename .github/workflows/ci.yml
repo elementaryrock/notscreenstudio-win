@@ -62,6 +62,28 @@ jobs:
       - name: Smoke test
         run: cargo run -p notscreenstudio-win-app --bin notscreenstudio -- --smoke-test
 
+  # ADR 0010: exactly one `unsafe` block exists in the workspace (the Recycle Bin call), and
+  # everything else is `#![forbid(unsafe_code)]`. A grep is crude but it is the check that
+  # actually fails when someone pastes in a Win32 snippet.
+  unsafe:
+    name: Unsafe code stays in one place
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Only windows_trash.rs may use unsafe
+        run: |
+          # `unsafe` as a keyword, not `unsafe_code` / `unsafe_file_name`, and not inside comments.
+          violations=$(grep -rnE '(^|[^_[:alnum:]])unsafe([^_[:alnum:]]|$)' --include=*.rs crates/ src-tauri/ \
+            | grep -v 'crates/nss-project/src/windows_trash.rs' \
+            | grep -vE '^[^:]*:[0-9]+:[[:space:]]*//' \
+            | grep -v 'unsafe-thumb' || true)
+          if [ -n "$violations" ]; then
+            echo "::error::unsafe code outside crates/nss-project/src/windows_trash.rs (see ADR 0010):"
+            echo "$violations"
+            exit 1
+          fi
+          echo "Unsafe code is confined to the Recycle Bin call."
+
   # PLAN.md §7.6: nothing may leave the machine. Fail the build if a network stack appears.
   privacy:
     name: No network dependencies

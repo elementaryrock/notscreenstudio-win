@@ -43,6 +43,8 @@ parking_lot = "0.12"
 sha2 = "0.10"
 proptest = "1"
 tempfile = "3"
+# Recycle Bin only (SHFileOperationW). Everything else uses `std`.
+windows-sys = { version = "0.61", default-features = false }
 
 [profile.dev]
 # Debug builds of the renderer are unusably slow; keep some optimisation in deps.
