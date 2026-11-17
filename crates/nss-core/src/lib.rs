@@ -11,6 +11,12 @@
 //!
 //! This crate is platform-neutral by rule. It must never depend on `windows`,
 //! `wgpu` or `tauri`.
+//!
+//! # Compatibility
+//!
+//! The `serde` representation of every persisted type matches Swift's `Codable` output, so
+//! `project.json` and `cursor.json` are interchangeable with the macOS build (PLAN.md §7.3)
+//! and the committed Mac fixtures can be used as golden data.
 
 #![forbid(unsafe_code)]
 
@@ -21,8 +27,28 @@ pub mod frame_state;
 pub mod project;
 pub mod protocols;
 pub mod recording;
+pub mod serde_util;
 pub mod style;
 pub mod timeline;
 
-pub use basics::{MediaTime, NormalizedPoint, NormalizedSize, PixelSize, RGBAColor};
-pub use protocols::{NssError, Result};
+pub use basics::{
+    MediaTime, NormalizedPoint, NormalizedSize, PixelSize, Point2, RGBAColor, Rect, Size2,
+    Timestamp,
+};
+pub use cursor::{
+    ClickEvent, ClickKind, CursorSample, CursorShape, CursorShapeChange, CursorTrack, MouseButton,
+};
+pub use frame_state::{CameraState, CursorState, FrameState, RippleState};
+pub use project::{
+    ExportPreset, ExportProgress, Project, ProjectReference, ProjectSummary, VideoCodec,
+};
+pub use protocols::{
+    InMemoryProjectLibrary, InputLogger, MotionModel, NssError, ProjectLibrary, ProjectStore,
+    RecordingSession, Result,
+};
+pub use recording::{CaptureSource, RecordingAssets, RecordingOptions, RecordingState};
+pub use style::{
+    AspectRatio, Background, BackgroundBlur, CameraBubble, CameraBubbleGeometry, CameraShape,
+    CursorStyle, ExportResolution, GradientStop, MeshPoint, Shadow, Style,
+};
+pub use timeline::{Timeline, TrimRange, ZoomBlock, ZoomFocus};

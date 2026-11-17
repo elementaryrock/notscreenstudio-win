@@ -2,13 +2,14 @@
 
 Port of [`dotslashsimran/notscreenstudio`](https://github.com/dotslashsimran/notscreenstudio) (macOS 15, Swift 6 + SwiftUI + Metal, ~14.5k lines across 8 modules plus 499 tests) to a native-feeling Windows desktop app.
 
-Status: **plan plus Stage 0 complete.** Upstream is vendored read-only at `_upstream/` for reference.
+Status: **plan, Stage 0 and Stage 1 complete.** Upstream is vendored read-only at `_upstream/` for reference.
 
 | Stage | Status |
 |---|---|
 | 0 — Repository and toolchain bootstrap | **done** |
-| 1 — `nss-core` | next |
-| 2-11 | not started |
+| 1 — `nss-core` | **done** |
+| 2 — `nss-motion` | next |
+| 3-11 | not started |
 
 When a stage lands, flip its row and keep the notes in that stage's section accurate.
 
@@ -166,6 +167,11 @@ Port, field for field, preserving the serialised shape:
 - Keep the on-disk **JSON key names identical to upstream** so fixtures from `Tests/` can be reused as golden files.
 
 **Exit:** all upstream `NSSCoreTests` behaviours reproduced (`BackgroundModelTests`, `CursorStateCodingTests`, `ZoomBlockModelTests`, `Round2ContractTests`) as Rust tests, including the exact migration rules (circle→circle, roundedRect→square+roundness, squircle→square@0.6, rectangle→wide@0).
+
+**Done.** 65 tests: one Rust module per ported Swift file (`basics`, `style`, `timeline`, `cursor`, `frame_state`, `project`, `recording`, `background_presets`) plus `tests/compat.rs`, which pins the exact persisted JSON (key sets, enum tags, epochs, uppercase UUIDs) and loads a v1 Mac-era `project.json` fixture. Notes:
+- Persisted key names now match Swift exactly; the first draft of `Shadow`, `CursorStyle`, `CursorTrack` and `Timeline` silently emitted `offset_x`, `motion_blur`, `sample_rate`, `zoom_blocks`. `tests/compat.rs` fails loudly on any such rename, so this class of bug cannot recur silently.
+- `FrameSource`/`FrameRenderer` are deliberately **not** in `nss-core` (see ADR 0009): they traffic in `CVPixelBuffer` upstream and belong to `nss-render` in Stage 4.
+- `serde_json` now enables `float_roundtrip`, found by a property test: without it a stored `f64` could come back 1 ULP off, so save/load equality on user projects was not guaranteed.
 
 ### Stage 2 — `nss-motion` (port of `NSSMotion`)
 - `Spring` (closed-form critically-damped spring, `MotionTuning`).

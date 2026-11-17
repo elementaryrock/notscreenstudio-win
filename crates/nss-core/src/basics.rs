@@ -1,9 +1,16 @@
-//! Conventions: time, normalised coordinates, colours, pixel sizes.
+//! Conventions: time, normalised coordinates, colours, pixel sizes, rectangles, timestamps.
 //!
 //! Port of upstream `NSSCore/Basics.swift`. The numeric contract here is load-bearing:
 //! every other crate in the workspace speaks this vocabulary.
+//!
+//! The `serde` representations deliberately match Swift's `Codable` output byte for byte
+//! (PLAN.md §5 Stage 1: "keep the on-disk JSON key names identical to upstream"), because
+//! the Mac `project.json` fixtures are reused as golden data.
 
-use serde::{Deserialize, Serialize};
+use serde::de::{self, Visitor};
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
+use std::fmt;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 /// Seconds from recording start (t = 0 is the first screen frame).
 pub type MediaTime = f64;
@@ -85,6 +92,17 @@ impl RGBAColor {
         Self { r, g, b, a }
     }
 
+    /// From `0xRRGGBB` (the form the built-in presets are written in).
+    #[must_use]
+    pub fn from_rgb24(v: u32) -> Self {
+        Self {
+            r: f64::from((v >> 16) & 0xFF) / 255.0,
+            g: f64::from((v >> 8) & 0xFF) / 255.0,
+            b: f64::from(v & 0xFF) / 255.0,
+            a: 1.0,
+        }
+    }
+
     /// `#RRGGBB` / `#RRGGBBAA` (the form the UI sends).
     #[must_use]
     pub fn to_hex(self) -> String {
@@ -152,6 +170,126 @@ impl PixelSize {
     }
 }
 
+/// A rectangle in display points, origin top-left (upstream `CGRect`).
+///
+/// Swift encodes `CGRect` as `{"origin":{"x":..,"y":..},"size":{"width":..,"height":..}}`;
+/// we reproduce that so a `CaptureSource.area` written by either side reads back identically.
+/// (This type only appears in runtime recording options, never in `project.json`.)
+#[derive(Debug, Clone, Copy, PartialEq, Default, Serialize, Deserialize)]
+pub struct Rect {
+    pub origin: Point2,
+    pub size: Size2,
+}
+
+impl Rect {
+    pub const fn new(x: f64, y: f64, width: f64, height: f64) -> Self {
+        Self {
+            origin: Point2 { x, y },
+            size: Size2 { width, height },
+        }
+    }
+
+    #[must_use]
+    pub fn width(self) -> f64 {
+        self.size.width
+    }
+
+    #[must_use]
+    pub fn height(self) -> f64 {
+        self.size.height
+    }
+}
+
+/// A point in display points (`CGPoint`).
+#[derive(Debug, Clone, Copy, PartialEq, Default, Serialize, Deserialize)]
+pub struct Point2 {
+    pub x: f64,
+    pub y: f64,
+}
+
+/// A size in display points (`CGSize`).
+#[derive(Debug, Clone, Copy, PartialEq, Default, Serialize, Deserialize)]
+pub struct Size2 {
+    pub width: f64,
+    pub height: f64,
+}
+
+/// An instant, stored as seconds since the Swift/CoreFoundation reference date
+/// (2001-01-01T00:00:00Z), which is exactly how Swift's `JSONEncoder` writes a `Date`
+/// by default (`deferredToDate`).
+#[derive(Debug, Clone, Copy, PartialEq, PartialOrd, Default)]
+pub struct Timestamp(pub f64);
+
+/// Seconds between the Unix epoch and the CoreFoundation reference date.
+const REFERENCE_DATE_UNIX_OFFSET: f64 = 978_307_200.0;
+
+impl Timestamp {
+    pub const ZERO: Timestamp = Timestamp(0.0);
+
+    /// The current instant.
+    #[must_use]
+    pub fn now() -> Self {
+        Self::from_system_time(SystemTime::now())
+    }
+
+    #[must_use]
+    pub fn from_system_time(t: SystemTime) -> Self {
+        match t.duration_since(UNIX_EPOCH) {
+            Ok(d) => Self(d.as_secs_f64() - REFERENCE_DATE_UNIX_OFFSET),
+            Err(e) => Self(-(e.duration().as_secs_f64() + REFERENCE_DATE_UNIX_OFFSET)),
+        }
+    }
+
+    #[must_use]
+    pub fn to_system_time(self) -> SystemTime {
+        let unix = self.0 + REFERENCE_DATE_UNIX_OFFSET;
+        if unix >= 0.0 {
+            UNIX_EPOCH + Duration::from_secs_f64(unix)
+        } else {
+            UNIX_EPOCH - Duration::from_secs_f64(-unix)
+        }
+    }
+
+    /// Seconds since the Unix epoch (for display and for the UI).
+    #[must_use]
+    pub fn unix_secs(self) -> f64 {
+        self.0 + REFERENCE_DATE_UNIX_OFFSET
+    }
+
+    #[must_use]
+    pub fn from_unix_secs(s: f64) -> Self {
+        Self(s - REFERENCE_DATE_UNIX_OFFSET)
+    }
+}
+
+impl Serialize for Timestamp {
+    fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        s.serialize_f64(self.0)
+    }
+}
+
+impl<'de> Deserialize<'de> for Timestamp {
+    fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        struct V;
+        impl Visitor<'_> for V {
+            type Value = Timestamp;
+            fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                f.write_str("a number of seconds since 2001-01-01")
+            }
+            fn visit_f64<E: de::Error>(self, v: f64) -> Result<Timestamp, E> {
+                Ok(Timestamp(v))
+            }
+            fn visit_i64<E: de::Error>(self, v: i64) -> Result<Timestamp, E> {
+                Ok(Timestamp(v as f64))
+            }
+            fn visit_u64<E: de::Error>(self, v: u64) -> Result<Timestamp, E> {
+                Ok(Timestamp(v as f64))
+            }
+        }
+        d.deserialize_f64(V)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -180,7 +318,6 @@ mod tests {
         );
         let a = RGBAColor::from_hex("#00ff0080").expect("8-digit hex");
         assert_eq!(a.a, 128.0 / 255.0);
-        // 3-digit shorthand expands each nibble.
         assert_eq!(
             RGBAColor::from_hex("f00"),
             Some(RGBAColor::new(1.0, 0.0, 0.0, 1.0))
@@ -190,11 +327,38 @@ mod tests {
 
     #[test]
     fn colors_serialise_as_flat_objects() {
-        // The on-disk key names must match upstream so fixtures stay loadable.
         let json = serde_json::to_value(RGBAColor::WHITE).expect("serialise");
         assert_eq!(json["r"], 1.0);
         assert_eq!(json["g"], 1.0);
         assert_eq!(json["b"], 1.0);
         assert_eq!(json["a"], 1.0);
+    }
+
+    #[test]
+    fn timestamp_matches_swift_reference_date_encoding() {
+        // Swift writes Date as Double seconds since 2001-01-01T00:00:00Z.
+        // 2020-01-01T00:00:00Z == unix 1577836800 == reference 599529600.
+        let t = Timestamp::from_unix_secs(1_577_836_800.0);
+        assert!((t.0 - 599_529_600.0).abs() < 1e-9);
+        assert_eq!(serde_json::to_string(&t).unwrap(), "599529600.0");
+
+        let back: Timestamp = serde_json::from_str("599529600.0").unwrap();
+        assert!((back.unix_secs() - 1_577_836_800.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn timestamp_round_trips_through_system_time() {
+        let t = Timestamp::now();
+        let back = Timestamp::from_system_time(t.to_system_time());
+        assert!((t.0 - back.0).abs() < 1e-3, "{t:?} vs {back:?}");
+    }
+
+    #[test]
+    fn rect_uses_swifts_origin_size_shape() {
+        let json = serde_json::to_value(Rect::new(10.0, 20.0, 100.0, 50.0)).unwrap();
+        assert_eq!(json["origin"]["x"], 10.0);
+        assert_eq!(json["origin"]["y"], 20.0);
+        assert_eq!(json["size"]["width"], 100.0);
+        assert_eq!(json["size"]["height"], 50.0);
     }
 }

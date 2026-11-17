@@ -30,7 +30,9 @@ nss-render = { path = "crates/nss-render" }
 nss-export = { path = "crates/nss-export" }
 
 serde = { version = "1", features = ["derive"] }
-serde_json = "1"
+# `float_roundtrip` makes serde_json parse f64 exactly. Without it a stored value can come
+# back 1 ULP off, which breaks save/load round-trip equality on user projects.
+serde_json = { version = "1", features = ["float_roundtrip"] }
 thiserror = "2"
 anyhow = "1"
 uuid = { version = "1", features = ["v4", "serde"] }
