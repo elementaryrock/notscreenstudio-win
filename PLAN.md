@@ -2,7 +2,15 @@
 
 Port of [`dotslashsimran/notscreenstudio`](https://github.com/dotslashsimran/notscreenstudio) (macOS 15, Swift 6 + SwiftUI + Metal, ~14.5k lines across 8 modules plus 499 tests) to a native-feeling Windows desktop app.
 
-Status: **plan only. Nothing is implemented yet.** Upstream is vendored read-only at `_upstream/` for reference.
+Status: **plan plus Stage 0 complete.** Upstream is vendored read-only at `_upstream/` for reference.
+
+| Stage | Status |
+|---|---|
+| 0 — Repository and toolchain bootstrap | **done** |
+| 1 — `nss-core` | next |
+| 2-11 | not started |
+
+When a stage lands, flip its row and keep the notes in that stage's section accurate.
 
 ---
 

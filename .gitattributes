@@ -1,0 +1,17 @@
+# Normalise line endings so a Windows checkout and CI agree.
+* text=auto eol=lf
+
+# PowerShell is happy with LF, but CRLF is the least surprising on Windows.
+*.ps1 text eol=crlf
+
+# Vendored upstream Swift: keep it byte-identical to what we cloned.
+_upstream/** -text
+
+# Binaries
+*.png binary
+*.ico binary
+*.icns binary
+*.exe binary
+*.msi binary
+*.wgsl text eol=lf
+*.rs text eol=lf
