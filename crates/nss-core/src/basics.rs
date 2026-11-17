@@ -198,6 +198,52 @@ impl Rect {
     pub fn height(self) -> f64 {
         self.size.height
     }
+
+    #[must_use]
+    pub fn min_x(self) -> f64 {
+        self.origin.x
+    }
+
+    #[must_use]
+    pub fn min_y(self) -> f64 {
+        self.origin.y
+    }
+
+    #[must_use]
+    pub fn max_x(self) -> f64 {
+        self.origin.x + self.size.width
+    }
+
+    #[must_use]
+    pub fn max_y(self) -> f64 {
+        self.origin.y + self.size.height
+    }
+
+    #[must_use]
+    pub fn mid_x(self) -> f64 {
+        self.origin.x + self.size.width * 0.5
+    }
+
+    #[must_use]
+    pub fn mid_y(self) -> f64 {
+        self.origin.y + self.size.height * 0.5
+    }
+
+    #[must_use]
+    pub fn mid(self) -> Point2 {
+        Point2::new(self.mid_x(), self.mid_y())
+    }
+
+    #[must_use]
+    pub fn half_size(self) -> Size2 {
+        Size2::new(self.size.width * 0.5, self.size.height * 0.5)
+    }
+
+    /// Half-open containment: the min edges are inside, the max edges are not.
+    #[must_use]
+    pub fn contains(self, x: f64, y: f64) -> bool {
+        x >= self.min_x() && x < self.max_x() && y >= self.min_y() && y < self.max_y()
+    }
 }
 
 /// A point in display points (`CGPoint`).
@@ -207,11 +253,35 @@ pub struct Point2 {
     pub y: f64,
 }
 
+impl Point2 {
+    pub const ZERO: Point2 = Point2 { x: 0.0, y: 0.0 };
+
+    pub const fn new(x: f64, y: f64) -> Self {
+        Self { x, y }
+    }
+
+    #[must_use]
+    pub fn is_finite(self) -> bool {
+        self.x.is_finite() && self.y.is_finite()
+    }
+}
+
 /// A size in display points (`CGSize`).
 #[derive(Debug, Clone, Copy, PartialEq, Default, Serialize, Deserialize)]
 pub struct Size2 {
     pub width: f64,
     pub height: f64,
+}
+
+impl Size2 {
+    pub const ZERO: Size2 = Size2 {
+        width: 0.0,
+        height: 0.0,
+    };
+
+    pub const fn new(width: f64, height: f64) -> Self {
+        Self { width, height }
+    }
 }
 
 /// An instant, stored as seconds since the Swift/CoreFoundation reference date

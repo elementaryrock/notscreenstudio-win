@@ -2,7 +2,7 @@
 
 Port of [`dotslashsimran/notscreenstudio`](https://github.com/dotslashsimran/notscreenstudio) (macOS 15, Swift 6 + SwiftUI + Metal, ~14.5k lines across 8 modules plus 499 tests) to a native-feeling Windows desktop app.
 
-Status: **plan, Stages 0-3 complete.** Upstream is vendored read-only at `_upstream/` for reference.
+Status: **plan, Stages 0-4 complete.** Upstream is vendored read-only at `_upstream/` for reference.
 
 | Stage | Status |
 |---|---|
@@ -10,8 +10,9 @@ Status: **plan, Stages 0-3 complete.** Upstream is vendored read-only at `_upstr
 | 1 — `nss-core` | **done** |
 | 2 — `nss-motion` | **done** |
 | 3 — `nss-project` | **done** |
-| 4 — `nss-render` | next |
-| 5-11 | not started |
+| 4 — `nss-render` | **done** |
+| 5 — `nss-capture` | next |
+| 6-11 | not started |
 
 When a stage lands, flip its row and keep the notes in that stage's section accurate.
 
@@ -229,6 +230,33 @@ Notes for later stages (full reasoning in **ADR 0010**):
 6. **`CursorAtlas`** — rasterise system cursors once per process at 8 px/pt into shelf-packed `rgba16Float` with a full mip chain, 32 px cell padding, per-cell point size + hotspot, `CursorAtlasCache` per device. Arrow fallback if a shape is unavailable.
 7. **`PassthroughRenderer`** as the fallback when no D3D12 adapter is available.
 8. **HDR input path**: accept `Rgba16Float`, tone-map in the background pass.
+
+**Status: done.** `nss-render` draws real frames on wgpu: `layout.rs` (the parity contract, a 1:1
+port of `RenderLayout`), `shader.wgsl` (the single-pass compositor, translated slot for slot),
+`uniforms.rs` (the 46-slot block shared with WGSL), `cursor_atlas.rs` (18 vector cursors at 8x with
+padding and a mip chain), `rasterizer.rs` (the CPU twin of the background maths), `image_blur.rs` +
+`blur.wgsl` (two-pass separable Gaussian in linear light), `frame.rs` (`Image`/`Frame`/`FrameSource`),
+`passthrough.rs` and `renderer.rs` (pipelines, caches, readback). 95 tests: 67 unit, plus
+`tests/metal_renderer.rs` (17), `tests/background_render.rs` (8) and `tests/cursor_render.rs` (3)
+ported from `MetalRendererTests`/`BackgroundRenderTests`/`Round2RenderTests`. GPU tests skip when no
+adapter exists. `docs/ADR/0011-renderer-parity.md` records the translation decisions and
+`docs/RENDERING.md` describes the wgpu frame pipeline.
+
+Four deviations, all deliberate:
+
+- **Frames are packed RGBA8 sRGB, not IOSurface BGRA.** One upload per frame instead of a zero-copy
+  wrap; that is the price of not writing per-vendor shared-surface code. `Image::to_bgra` converts
+  once at the FFmpeg/Windows-compositor boundary. ADR 0011 §1.
+- **The blur is two fullscreen passes, not a compute kernel.** Same plan and same maths, and it keeps
+  the targets to formats that are core WebGPU. Each pass is its own submit: a shared encoder lets the
+  second pass's `write_buffer` overtake the first pass (this was a real bug, caught by the blur
+  tests). ADR 0011 §6.
+- **The cursor atlas is our own art, not `NSCursor`.** Windows has no stable per-DPI system cursor
+  bitmap to hash a frame against. `Cell::is_system_image` is always `false`; the arrow's hotspot is
+  the body's apex so the tip lands on the cursor position. ADR 0011 §5.
+- **HDR input is not implemented.** Upstream's `Rgba16Float` tone-map path is deferred until
+  `nss-capture` (Stage 5) decides whether WGC HDR frames exist on this platform at all; the renderer
+  currently takes sRGB RGBA8 in and out. Recorded here so a later stage does not assume it is done.
 
 **Exit:** `RENDERING.md` ported to `docs/RENDERING.md` describing the wgpu reality; `BackgroundRenderTests`/`Round2LayoutTests`/`Round2RenderTests`/`MetalRendererTests` behaviours reproduced (`*RendererTests` renamed `*RendererTests`, GPU tests `.enabled(if:)`-equivalent via `#[ignore]` + a `--ignored gpu` CI job); the `previewAndExportPoolsGiveByteIdenticalFrames` determinism test reproduced; 4K frame under the 8 ms budget on this machine (benchmark, not a CI gate).
 

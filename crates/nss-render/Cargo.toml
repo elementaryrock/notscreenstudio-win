@@ -6,7 +6,12 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 
-# Stage 4 adds: wgpu, image, bytemuck, parking_lot (renderer device + atlas).
 [dependencies]
 nss-core = { workspace = true }
+nss-motion = { workspace = true }
 thiserror = { workspace = true }
+wgpu = "30"
+pollster = "0.4"
+half = "2"
+# PNG/JPEG decode only: background images are the one thing the renderer reads from disk.
+image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }

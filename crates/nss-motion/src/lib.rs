@@ -29,7 +29,7 @@ pub use linear_motion_model::LinearMotionModel;
 pub use motion_tuning::MotionTuning;
 pub use spring::{Spring, SpringStepper};
 pub use spring_motion_model::SpringMotionModel;
-pub use viewport::SourceViewport;
+pub use viewport::{clamped_to_source, CameraViewport, SourceViewport};
 pub use zoom_planner::{ZoomOrigin, ZoomPlanner, ZoomSegment};
 
 /// Build the shipped motion model from a project's motion-relevant inputs.

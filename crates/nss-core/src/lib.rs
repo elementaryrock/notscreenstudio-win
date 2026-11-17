@@ -48,7 +48,7 @@ pub use protocols::{
 };
 pub use recording::{CaptureSource, RecordingAssets, RecordingOptions, RecordingState};
 pub use style::{
-    AspectRatio, Background, BackgroundBlur, CameraBubble, CameraBubbleGeometry, CameraShape,
-    CursorStyle, ExportResolution, GradientStop, MeshPoint, Shadow, Style,
+    AspectRatio, Background, BackgroundBlur, CameraBorder, CameraBubble, CameraBubbleGeometry,
+    CameraShape, CursorStyle, ExportResolution, GradientStop, MeshPoint, Shadow, Style,
 };
 pub use timeline::{Timeline, TrimRange, ZoomBlock, ZoomFocus};

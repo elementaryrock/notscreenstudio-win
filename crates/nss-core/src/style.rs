@@ -218,6 +218,11 @@ pub enum CameraShape {
     Wide,
 }
 
+impl CameraShape {
+    /// Every shape, in the order the picker shows them.
+    pub const ALL: [Self; 4] = [Self::Circle, Self::Square, Self::Tall, Self::Wide];
+}
+
 /// A shape plus the roundness a legacy value implies.
 ///
 /// Round 1 wrote `shape` as `{"circle":{}}`, `{"roundedRect":{"radius":r}}`,
