@@ -37,24 +37,41 @@ export function ExportModal({
   const [codec, setCodec] = useState<VideoCodec>("h264");
   const [outputPath, setOutputPath] = useState<string>(() => {
     const safeName = project.name.replace(/[<>:"/\\|?*]/g, "-") || "export";
-    return defaultOutputDir ? `${defaultOutputDir}\\${safeName}.mp4` : "";
+    if (!defaultOutputDir) return "";
+    const cleanDir = defaultOutputDir.replace(/[\\/]+$/, "");
+    return `${cleanDir}\\${safeName}.mp4`;
   });
   const [ffmpeg, setFfmpeg] = useState<FfmpegStatusDto | null>(null);
   const [progress, setProgress] = useState<ExportProgress>({ idle: {} });
   const [finishedPath, setFinishedPath] = useState<string | null>(null);
 
   useEffect(() => {
-    void checkFfmpeg().then(setFfmpeg);
+    let disposed = false;
     let unlisten: (() => void) | undefined;
+
+    void checkFfmpeg()
+      .then((ff) => {
+        if (disposed) return;
+        setFfmpeg(ff);
+        if (!ff.h264 && ff.hevc) setCodec("hevc");
+      })
+      .catch(() => {});
+
     void onExportProgress((p) => {
+      if (disposed) return;
       setProgress(p);
       if ("finished" in p) {
         setFinishedPath(p.finished);
       }
-    }).then((fn) => {
-      unlisten = fn;
-    });
+    })
+      .then((fn) => {
+        if (disposed) fn();
+        else unlisten = fn;
+      })
+      .catch(() => {});
+
     return () => {
+      disposed = true;
       unlisten?.();
     };
   }, []);
@@ -143,7 +160,11 @@ export function ExportModal({
               <button
                 key={c}
                 type="button"
-                disabled={isRunning || (c === "hevc" && ffmpeg !== null && !ffmpeg.hevc)}
+                disabled={
+                  isRunning ||
+                  (c === "h264" && ffmpeg !== null && !ffmpeg.h264) ||
+                  (c === "hevc" && ffmpeg !== null && !ffmpeg.hevc)
+                }
                 className={codec === c ? "active" : ""}
                 onClick={() => setCodec(c)}
               >
@@ -165,7 +186,8 @@ export function ExportModal({
         </div>
 
         <div className="export-summary">
-          Output: {size.width}×{size.height} • {fps} fps • {codec.toUpperCase()} • AAC 48 kHz
+          Output: {size.width}×{size.height} • {fps} fps • {codec.toUpperCase()}
+          {project.assets.micFile ? " • AAC 48 kHz" : ""}
         </div>
 
         {"running" in progress && (
@@ -193,7 +215,7 @@ export function ExportModal({
               <button
                 className="btn-secondary"
                 type="button"
-                onClick={() => void revealPath(finishedPath)}
+                onClick={() => void revealPath(finishedPath).catch(() => {})}
               >
                 {strings.showInExplorer}
               </button>
@@ -212,7 +234,7 @@ export function ExportModal({
               <button
                 className="btn-danger"
                 type="button"
-                onClick={() => void cancelExport()}
+                onClick={() => void cancelExport().catch(() => {})}
               >
                 {strings.cancel}
               </button>
@@ -224,7 +246,10 @@ export function ExportModal({
                 <button
                   className="btn-primary"
                   type="button"
-                  disabled={ffmpeg !== null && !ffmpeg.available}
+                  disabled={
+                    ffmpeg !== null &&
+                    (!ffmpeg.available || (codec === "h264" ? !ffmpeg.h264 : !ffmpeg.hevc))
+                  }
                   onClick={() => void handleStart()}
                 >
                   {strings.startExport}

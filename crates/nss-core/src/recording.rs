@@ -138,15 +138,38 @@ impl RecordingAssets {
     }
 
     /// True when `name` is a plain file name that stays inside the project bundle: non-empty,
-    /// no path separators, not `.` or `..`, and no NUL.
+    /// no path separators, no Windows drive prefix or NTFS stream (`:`), no control characters,
+    /// not `.` / `..`, not ending with space/dot, and not a Windows reserved device name (`CON`,
+    /// `PRN`, `AUX`, `NUL`, `COM1..9`, `LPT1..9`).
     #[must_use]
     pub fn is_safe_file_name(name: &str) -> bool {
-        !name.is_empty()
-            && name != "."
-            && name != ".."
-            && !name.contains('/')
-            && !name.contains('\\')
-            && !name.contains('\0')
+        if name.is_empty()
+            || name == "."
+            || name == ".."
+            || name.contains(['/', '\\', '\0', ':'])
+            || name.bytes().any(|b| b < 0x20)
+            || name.ends_with(['.', ' '])
+        {
+            return false;
+        }
+        let stem = name
+            .split('.')
+            .next()
+            .unwrap_or(name)
+            .trim_end()
+            .to_ascii_lowercase();
+        const RESERVED: [&str; 22] = [
+            "con", "prn", "aux", "nul", "com1", "com2", "com3", "com4", "com5", "com6", "com7",
+            "com8", "com9", "lpt1", "lpt2", "lpt3", "lpt4", "lpt5", "lpt6", "lpt7", "lpt8", "lpt9",
+        ];
+        if RESERVED.contains(&stem.as_str()) {
+            return false;
+        }
+        let mut comps = std::path::Path::new(name).components();
+        matches!(
+            (comps.next(), comps.next()),
+            (Some(std::path::Component::Normal(_)), None)
+        )
     }
 
     /// The first stored file name that is not a plain name inside the bundle, if any.

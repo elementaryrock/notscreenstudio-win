@@ -15,8 +15,9 @@ use windows::Win32::Foundation::{LPARAM, LRESULT, WPARAM};
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::System::Threading::GetCurrentThreadId;
 use windows::Win32::UI::WindowsAndMessaging::{
-    CallNextHookEx, DispatchMessageW, GetMessageW, PostThreadMessageW, SetWindowsHookExW,
-    TranslateMessage, UnhookWindowsHookEx, HHOOK, MSG, MSLLHOOKSTRUCT, WH_MOUSE_LL, WM_QUIT,
+    CallNextHookEx, DispatchMessageW, GetMessageW, PeekMessageW, PostThreadMessageW,
+    SetWindowsHookExW, TranslateMessage, UnhookWindowsHookEx, HHOOK, MSG, MSLLHOOKSTRUCT,
+    PM_NOREMOVE, WH_MOUSE_LL, WM_QUIT,
 };
 
 use crate::hook::{map_win32_mouse_message, ClickCallback, RawMouseClick};
@@ -73,10 +74,13 @@ impl WinMouseHook {
                                 return;
                             }
                         };
+                    // Force Win32 to create this thread's message queue before publishing `tid`,
+                    // otherwise an immediate `PostThreadMessageW(WM_QUIT)` could be lost.
+                    let mut msg = MSG::default();
+                    let _ = PeekMessageW(&mut msg, None, 0, 0, PM_NOREMOVE);
                     let _ = tx.send(Ok(tid));
 
-                    let mut msg = MSG::default();
-                    while GetMessageW(&mut msg, None, 0, 0).as_bool() {
+                    while GetMessageW(&mut msg, None, 0, 0).0 > 0 {
                         let _ = TranslateMessage(&msg);
                         DispatchMessageW(&msg);
                     }

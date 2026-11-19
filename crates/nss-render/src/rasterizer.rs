@@ -62,7 +62,12 @@ impl BackgroundRasterizer {
                 if sorted.len() == 1 {
                     return Self::solid(first.color);
                 }
-                let a = angle_degrees * std::f64::consts::PI / 180.0;
+                let angle = if angle_degrees.is_finite() {
+                    *angle_degrees
+                } else {
+                    0.0
+                };
+                let a = angle * std::f64::consts::PI / 180.0;
                 let (dx, dy) = (a.cos(), a.sin());
                 let half_extent = 0.5 * (w * dx.abs() + h * dy.abs());
                 BackgroundShading::Linear {
@@ -70,10 +75,24 @@ impl BackgroundRasterizer {
                         .iter()
                         .map(|s| {
                             let l = oklab(s.color);
-                            [l[0], l[1], l[2], s.color.a.clamp(0.0, 1.0)]
+                            let alpha = if s.color.a.is_finite() {
+                                s.color.a.clamp(0.0, 1.0)
+                            } else {
+                                1.0
+                            };
+                            [l[0], l[1], l[2], alpha]
                         })
                         .collect(),
-                    locations: sorted.iter().map(|s| s.location).collect(),
+                    locations: sorted
+                        .iter()
+                        .map(|s| {
+                            if s.location.is_finite() {
+                                s.location
+                            } else {
+                                0.0
+                            }
+                        })
+                        .collect(),
                     dir: [dx, dy],
                     inv_length: 1.0 / (2.0 * half_extent).max(1.0),
                 }
@@ -93,7 +112,12 @@ impl BackgroundRasterizer {
     #[must_use]
     pub fn solid(c: RGBAColor) -> BackgroundShading {
         let lin = linear(c);
-        BackgroundShading::Solid([lin[0], lin[1], lin[2], c.a.clamp(0.0, 1.0)])
+        let alpha = if c.a.is_finite() {
+            c.a.clamp(0.0, 1.0)
+        } else {
+            1.0
+        };
+        BackgroundShading::Solid([lin[0], lin[1], lin[2], alpha])
     }
 
     /// sRGB 8-bit RGBA pixels of `background` at `width` x `height` (see
@@ -115,7 +139,15 @@ impl BackgroundRasterizer {
         }
         BackgroundShading::Mesh {
             colors: points.iter().map(|p| oklab(p.color)).collect(),
-            positions: points.iter().map(|p| [p.x, p.y]).collect(),
+            positions: points
+                .iter()
+                .map(|p| {
+                    [
+                        if p.x.is_finite() { p.x } else { 0.5 },
+                        if p.y.is_finite() { p.y } else { 0.5 },
+                    ]
+                })
+                .collect(),
             warp: if warp.is_finite() { warp } else { 0.0 },
         }
     }
@@ -157,9 +189,12 @@ impl BackgroundShading {
                 positions,
                 warp,
             } => {
-                let mut uv = [p[0] / size[0], p[1] / size[1]];
-                uv[0] += warp * (uv[1] * 5.1 + 1.3).sin();
-                uv[1] += warp * (uv[0] * 4.3 + 0.7).sin();
+                let ux = p[0] / size[0];
+                let uy = p[1] / size[1];
+                let uv = [
+                    ux + warp * (uy * 5.1 + 1.3).sin(),
+                    uy + warp * (ux * 4.3 + 0.7).sin(),
+                ];
                 let m = size[0].max(size[1]);
                 let aspect = [size[0] / m, size[1] / m];
                 let mut acc = [0.0_f64; 3];

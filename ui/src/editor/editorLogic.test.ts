@@ -10,6 +10,7 @@ import {
   endDragEdit,
   formatCfDate,
   formatDurationShort,
+  formatElapsedTimer,
   formatTimecode,
   moveZoomBlock,
   normalizeZoomBlocks,
@@ -157,6 +158,11 @@ test("UndoHistory coalesces slider drags into one undo step", () => {
   assert.equal(h.future.length, 0);
   assert.equal(formatTimecode(65.4), "01:05.4");
   assert.equal(formatDurationShort(125), "2:05");
+  assert.equal(formatElapsedTimer(0), "00:00");
+  assert.equal(formatElapsedTimer(59.9), "00:59");
+  assert.equal(formatElapsedTimer(125.7), "02:05");
+  assert.equal(formatElapsedTimer(3661.2), "1:01:01");
+  assert.equal(formatElapsedTimer(Number.NaN), "00:00");
   assert.ok(formatCfDate(700_000_000).length > 0);
 });
 

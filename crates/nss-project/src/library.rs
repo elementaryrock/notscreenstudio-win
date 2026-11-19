@@ -85,13 +85,17 @@ impl Thumbnailer for FfmpegThumbnailer {
             return Ok(false);
         }
         let seek = |time: MediaTime| -> Result<bool, ProjectError> {
-            let temp = crate::atomic_file::temp_path_for(to).with_extension("jpg");
+            // Preserve the `.nss-tmp-<uuid>` marker so crash recovery still recognises this temp
+            // file while giving FFmpeg a `.jpg` suffix.
+            let mut temp_os = crate::atomic_file::temp_path_for(to).into_os_string();
+            temp_os.push(".jpg");
+            let temp = PathBuf::from(temp_os);
             let scale = format!(
                 "scale={e}:{e}:force_original_aspect_ratio=decrease",
                 e = self.max_edge
             );
-            let output = std::process::Command::new(&self.exe)
-                .args(["-hide_banner", "-loglevel", "error", "-nostdin", "-y"])
+            let mut cmd = std::process::Command::new(&self.exe);
+            cmd.args(["-hide_banner", "-loglevel", "error", "-nostdin", "-y"])
                 .arg("-ss")
                 .arg(format!("{:.3}", time.max(0.0)))
                 .arg("-i")
@@ -102,9 +106,38 @@ impl Thumbnailer for FfmpegThumbnailer {
                 .arg("-f")
                 .arg("mjpeg")
                 .arg(&temp)
-                .output()
-                .map_err(|e| ProjectError::io(&self.exe, e))?;
-            if !output.status.success() || !temp.is_file() {
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null());
+            #[cfg(windows)]
+            {
+                use std::os::windows::process::CommandExt;
+                const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+                cmd.creation_flags(CREATE_NO_WINDOW);
+            }
+            let mut child = cmd.spawn().map_err(|e| ProjectError::io(&self.exe, e))?;
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
+            let status = loop {
+                match child.try_wait() {
+                    Ok(Some(st)) => break st,
+                    Ok(None) => {
+                        if std::time::Instant::now() >= deadline {
+                            let _ = child.kill();
+                            let _ = child.wait();
+                            let _ = fs::remove_file(&temp);
+                            return Ok(false);
+                        }
+                        std::thread::sleep(std::time::Duration::from_millis(25));
+                    }
+                    Err(e) => {
+                        let _ = child.kill();
+                        let _ = child.wait();
+                        let _ = fs::remove_file(&temp);
+                        return Err(ProjectError::io(&self.exe, e));
+                    }
+                }
+            };
+            if !status.success() || !temp.is_file() {
                 let _ = fs::remove_file(&temp);
                 return Ok(false);
             }
@@ -216,13 +249,18 @@ impl FileProjectLibrary {
         let Ok(entries) = fs::read_dir(&self.library) else {
             return Vec::new();
         };
-        let mut result: Vec<ProjectSummary> = Vec::new();
-        let mut seen: HashSet<Uuid> = HashSet::new();
-        for bundle in entries
+        let mut bundles: Vec<PathBuf> = entries
             .flatten()
             .map(|e| e.path())
             .filter(|p| p.is_dir() && has_project_extension(p))
-        {
+            .collect();
+        // Sort deterministically before deduplicating project IDs so copied bundles keep the same
+        // ID across launches regardless of directory entry enumeration order.
+        bundles.sort_by_key(|p| crate::debounce::path_key(p));
+
+        let mut result: Vec<ProjectSummary> = Vec::new();
+        let mut seen: HashSet<Uuid> = HashSet::new();
+        for bundle in bundles {
             let Some(project) = self.read_project(&bundle) else {
                 continue;
             };
@@ -298,25 +336,39 @@ impl FileProjectLibrary {
         if target.is_file() {
             return Some(target);
         }
+        let key = crate::debounce::path_key(bundle);
         let lock = {
             let mut map = self.in_flight.lock();
             Arc::clone(
-                map.entry(bundle.clone())
+                map.entry(key.clone())
                     .or_insert_with(|| Arc::new(Mutex::new(()))),
             )
         };
-        let _generating = lock.lock();
-        // Another thread may have produced it while we waited for the lock.
-        if target.is_file() {
-            return Some(target);
+        let result = {
+            let _generating = lock.lock();
+            // Another thread may have produced it while we waited for the lock.
+            if target.is_file() {
+                Some(target)
+            } else {
+                let video = bundle.join(&project.assets.screen_file);
+                let at = Self::thumbnail_time(project.assets.duration);
+                match self.thumbnailer.generate(&video, at, &target) {
+                    Ok(true) => Some(target),
+                    Ok(false) => None,
+                    Err(_) => None,
+                }
+            }
+        };
+        // Prune the map entry once no other caller holds a reference to this per-bundle lock.
+        {
+            let mut map = self.in_flight.lock();
+            if map.get(&key).is_some_and(|existing| {
+                Arc::ptr_eq(existing, &lock) && Arc::strong_count(&lock) == 2
+            }) {
+                map.remove(&key);
+            }
         }
-        let video = bundle.join(&project.assets.screen_file);
-        let at = Self::thumbnail_time(project.assets.duration);
-        match self.thumbnailer.generate(&video, at, &target) {
-            Ok(true) => Some(target),
-            Ok(false) => None,
-            Err(_) => None,
-        }
+        result
     }
 
     // MARK: Delete and rename
@@ -347,12 +399,16 @@ impl FileProjectLibrary {
         }
         // Primary file only: never rewrite project.json from an older backup.
         let primary = summary.bundle.project_file();
-        let data = fs::read(&primary).map_err(|_| {
-            ProjectError::Corrupt(format!(
-                "Missing {} in {}",
-                nss_core::ProjectReference::PROJECT_FILE_NAME,
-                leaf(&summary.bundle.url)
-            ))
+        let data = crate::atomic_file::read_with_retry(&primary).map_err(|e| {
+            if e.kind() == std::io::ErrorKind::NotFound {
+                ProjectError::Corrupt(format!(
+                    "Missing {} in {}",
+                    nss_core::ProjectReference::PROJECT_FILE_NAME,
+                    leaf(&summary.bundle.url)
+                ))
+            } else {
+                ProjectError::io(&primary, e)
+            }
         })?;
         let migrated = self.migrator.migrate(&data)?;
         let mut project: Project = serde_json::from_slice(&migrated).map_err(|e| {
@@ -410,7 +466,7 @@ fn has_project_extension(path: &Path) -> bool {
 fn path_id(path: &Path) -> Uuid {
     let text = path.to_string_lossy();
     let normalized = if cfg!(windows) {
-        text.to_lowercase()
+        text.replace('\\', "/").to_lowercase()
     } else {
         text.into_owned()
     };

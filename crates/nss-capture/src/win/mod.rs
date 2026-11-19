@@ -5,10 +5,10 @@
 //! [`ContentSnapshot`]. Keeping it here means the picker, the filter and the recorders all agree on
 //! what a monitor is, and it can be tested without a desktop session.
 
-use nss_core::{PixelSize, Point2, Rect, Size2};
+use nss_core::{PixelSize, Point2, Rect};
 
 use crate::capture_filter::{App, ContentSnapshot, Window};
-use crate::capture_math::{is_pickable_window, pixel_size};
+use crate::capture_math::{even_pixels, is_pickable_window};
 
 #[cfg(windows)]
 pub mod devices;
@@ -46,11 +46,15 @@ impl Monitor {
     }
 
     /// Size in physical pixels.
+    ///
+    /// Under Per-Monitor DPI v2 (Windows app default), `GetMonitorInfoW` already reports `rect`
+    /// in physical virtual-desktop pixels, so we round to even dimensions without multiplying by
+    /// `self.scale()` a second time.
     #[must_use]
     pub fn pixel_size(&self) -> PixelSize {
-        pixel_size(
-            Size2::new(self.rect.width(), self.rect.height()),
-            self.scale(),
+        PixelSize::new(
+            even_pixels(self.rect.width()),
+            even_pixels(self.rect.height()),
         )
     }
 
@@ -211,9 +215,16 @@ mod tests {
     }
 
     #[test]
-    fn pixel_size_is_the_logical_size_times_the_scale() {
-        let m = monitor(1, 0.0, 0.0, 1280.0, 720.0, 144);
+    fn pixel_size_uses_physical_monitor_rect_without_double_scaling() {
+        // Under Per-Monitor DPI v2, `rect` is already in physical pixels (e.g. 1920x1080 @ 1.5x).
+        let m = monitor(1, 0.0, 0.0, 1920.0, 1080.0, 144);
         assert_eq!((m.pixel_size().width, m.pixel_size().height), (1920, 1080));
+        // Odd physical dimensions round to even encoder dimensions.
+        let odd = monitor(1, 0.0, 0.0, 1365.0, 767.0, 96);
+        assert_eq!(
+            (odd.pixel_size().width, odd.pixel_size().height),
+            (1366, 768)
+        );
     }
 
     #[test]
@@ -223,7 +234,7 @@ mod tests {
             "Display 1 (1920x1080, primary)"
         );
         assert_eq!(
-            monitor(2, 1920.0, 0.0, 1280.0, 720.0, 144).display_name(1),
+            monitor(2, 1920.0, 0.0, 1920.0, 1080.0, 144).display_name(1),
             "Display 2 (1920x1080, 1.5x)"
         );
     }

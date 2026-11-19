@@ -22,6 +22,17 @@ interface SetupModalProps {
 
 type SourceTab = "display" | "window" | "area";
 
+function isSourceLive(source: CaptureSource | null, list: CaptureSourceList): boolean {
+  if (!source) return false;
+  if ("display" in source) {
+    return list.displays.some((d) => d.id === source.display.id);
+  }
+  if ("window" in source) {
+    return list.windows.some((w) => w.id === source.window.id);
+  }
+  return list.displays.some((d) => d.id === source.area.displayID);
+}
+
 export function SetupModal({
   settings,
   onSettingsChange,
@@ -36,41 +47,102 @@ export function SetupModal({
     return "display";
   });
   const [selectedSource, setSelectedSource] = useState<CaptureSource | null>(settings.source);
+  const [areaDisplayId, setAreaDisplayId] = useState<number | null>(() => {
+    if (settings.source && "area" in settings.source) return settings.source.area.displayID;
+    if (settings.source && "display" in settings.source) return settings.source.display.id;
+    return null;
+  });
   const [micEnabled, setMicEnabled] = useState(settings.micEnabled);
   const [micId, setMicId] = useState<string>(settings.micDeviceId ?? "");
   const [camEnabled, setCamEnabled] = useState(settings.cameraEnabled);
   const [camId, setCamId] = useState<string>(settings.cameraDeviceId ?? "");
-  const [systemAudio, setSystemAudio] = useState(false);
+  const [systemAudio, setSystemAudio] = useState(settings.captureSystemAudio);
   const [countdown, setCountdown] = useState(settings.countdownSeconds);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
+  // Sync when `settings.source` updates externally (e.g. after dragging an Area).
   useEffect(() => {
+    if (!settings.source) return;
+    setSelectedSource(settings.source);
+    if ("area" in settings.source) {
+      setTab("area");
+      setAreaDisplayId(settings.source.area.displayID);
+    } else if ("window" in settings.source) {
+      setTab("window");
+    } else {
+      setTab("display");
+      setAreaDisplayId(settings.source.display.id);
+    }
+  }, [settings.source]);
+
+  useEffect(() => {
+    let active = true;
     void (async () => {
-      const [srcList, devList] = await Promise.all([listCaptureSources(), listDevices()]);
-      setSources(srcList);
-      setDevices(devList);
-      if (!selectedSource && srcList.displays[0]) {
-        setSelectedSource({ display: { id: srcList.displays[0].id } });
-      }
-      if (!micId && devList.microphones[0]) {
-        const def = devList.microphones.find((m) => m.isDefault) ?? devList.microphones[0];
-        setMicId(def.id);
-      }
-      if (!camId && devList.cameras[0]) {
-        const def = devList.cameras.find((c) => c.isDefault) ?? devList.cameras[0];
-        setCamId(def.id);
+      try {
+        const [srcList, devList] = await Promise.all([listCaptureSources(), listDevices()]);
+        if (!active) return;
+        setSources(srcList);
+        setDevices(devList);
+
+        const primaryDisplay = srcList.displays.find((d) => d.isMain) ?? srcList.displays[0];
+        if (!isSourceLive(selectedSource, srcList) && primaryDisplay) {
+          setSelectedSource({ display: { id: primaryDisplay.id } });
+          setTab("display");
+        }
+        setAreaDisplayId((prev) => {
+          if (prev !== null && srcList.displays.some((d) => d.id === prev)) return prev;
+          return primaryDisplay ? primaryDisplay.id : null;
+        });
+
+        // Validate persisted microphone & camera IDs against live hardware.
+        if (devList.microphones.length === 0) {
+          setMicEnabled(false);
+          setMicId("");
+        } else if (!devList.microphones.some((m) => m.id === micId)) {
+          const def = devList.microphones.find((m) => m.isDefault) ?? devList.microphones[0]!;
+          setMicId(def.id);
+        }
+
+        if (devList.cameras.length === 0) {
+          setCamEnabled(false);
+          setCamId("");
+        } else if (!devList.cameras.some((c) => c.id === camId)) {
+          const def = devList.cameras.find((c) => c.isDefault) ?? devList.cameras[0]!;
+          setCamId(def.id);
+        }
+      } catch (e) {
+        if (active) setError(e instanceof Error ? e.message : String(e));
       }
     })();
+    return () => {
+      active = false;
+    };
   }, []);
+
+  const handleTabChange = (nextTab: SourceTab): void => {
+    setTab(nextTab);
+    if (nextTab === "display") {
+      if (!selectedSource || !("display" in selectedSource)) {
+        const d = sources.displays[0];
+        if (d) setSelectedSource({ display: { id: d.id } });
+      }
+    } else if (nextTab === "window") {
+      if (!selectedSource || !("window" in selectedSource)) {
+        const w = sources.windows[0];
+        if (w) setSelectedSource({ window: { id: w.id } });
+      }
+    }
+  };
 
   const persistCurrent = async (sourceOverride?: CaptureSource | null): Promise<ShellSettings> => {
     const next: ShellSettings = {
       ...settings,
       source: sourceOverride !== undefined ? sourceOverride : selectedSource,
-      micEnabled,
+      micEnabled: micEnabled && devices.microphones.length > 0,
       micDeviceId: micId || null,
-      cameraEnabled: camEnabled,
+      captureSystemAudio: systemAudio,
+      cameraEnabled: camEnabled && devices.cameras.length > 0,
       cameraDeviceId: camId || null,
       countdownSeconds: countdown,
     };
@@ -80,9 +152,8 @@ export function SetupModal({
   };
 
   const handleRecord = async (): Promise<void> => {
-    const src =
-      selectedSource ??
-      (sources.displays[0] ? { display: { id: sources.displays[0].id } } : null);
+    const fallback = sources.displays[0] ? { display: { id: sources.displays[0].id } } : null;
+    const src = isSourceLive(selectedSource, sources) ? selectedSource : fallback;
     if (!src) {
       setError("No display or window is available to record.");
       return;
@@ -93,8 +164,8 @@ export function SetupModal({
       await persistCurrent(src);
       await startRecording({
         source: src,
-        micDeviceId: micEnabled ? micId || "default" : null,
-        cameraDeviceId: camEnabled ? camId || "default" : null,
+        micDeviceId: micEnabled && devices.microphones.length > 0 ? micId || "default" : null,
+        cameraDeviceId: camEnabled && devices.cameras.length > 0 ? camId || "default" : null,
         captureSystemAudio: systemAudio,
         countdownSeconds: countdown,
       });
@@ -107,15 +178,34 @@ export function SetupModal({
   };
 
   const handleSelectArea = async (): Promise<void> => {
-    await persistCurrent();
-    await openOverlay("areaSelection");
+    setError(null);
+    try {
+      const targetDisplay =
+        areaDisplayId !== null
+          ? { display: { id: areaDisplayId } }
+          : sources.displays[0]
+            ? { display: { id: sources.displays[0].id } }
+            : selectedSource;
+      await persistCurrent(targetDisplay);
+      await openOverlay("areaSelection");
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    }
   };
 
   const handlePopOut = async (): Promise<void> => {
-    await persistCurrent();
-    await openOverlay("setupBar");
-    onClose();
+    setError(null);
+    try {
+      await persistCurrent();
+      await openOverlay("setupBar");
+      onClose();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    }
   };
+
+  const noMics = devices.microphones.length === 0;
+  const noCams = devices.cameras.length === 0;
 
   return (
     <div className="modal-backdrop" onClick={onClose}>
@@ -133,7 +223,7 @@ export function SetupModal({
               key={t}
               type="button"
               className={tab === t ? "active" : ""}
-              onClick={() => setTab(t)}
+              onClick={() => handleTabChange(t)}
             >
               {t === "display"
                 ? strings.sourceDisplay
@@ -148,13 +238,18 @@ export function SetupModal({
           {tab === "display" &&
             sources.displays.map((d) => {
               const active =
-                selectedSource !== null && "display" in selectedSource && selectedSource.display.id === d.id;
+                selectedSource !== null &&
+                "display" in selectedSource &&
+                selectedSource.display.id === d.id;
               return (
                 <button
                   key={d.id}
                   type="button"
                   className={`source-item ${active ? "selected" : ""}`}
-                  onClick={() => setSelectedSource({ display: { id: d.id } })}
+                  onClick={() => {
+                    setSelectedSource({ display: { id: d.id } });
+                    setAreaDisplayId(d.id);
+                  }}
                 >
                   <span className="source-title">{d.name}</span>
                   <span className="source-sub">
@@ -170,7 +265,9 @@ export function SetupModal({
             ) : (
               sources.windows.map((w) => {
                 const active =
-                  selectedSource !== null && "window" in selectedSource && selectedSource.window.id === w.id;
+                  selectedSource !== null &&
+                  "window" in selectedSource &&
+                  selectedSource.window.id === w.id;
                 return (
                   <button
                     key={w.hwnd}
@@ -187,10 +284,25 @@ export function SetupModal({
 
           {tab === "area" && (
             <div className="area-box">
+              {sources.displays.length > 1 && (
+                <label className="device-row" style={{ width: "100%" }}>
+                  <span>Target Display</span>
+                  <select
+                    value={areaDisplayId ?? ""}
+                    onChange={(e) => setAreaDisplayId(Number(e.target.value))}
+                  >
+                    {sources.displays.map((d) => (
+                      <option key={d.id} value={d.id}>
+                        {d.name}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              )}
               <p className="muted">
                 {selectedSource && "area" in selectedSource
-                  ? `Selected area: ${Math.round(selectedSource.area.rect.size.width)} × ${Math.round(selectedSource.area.rect.size.height)} px`
-                  : "Drag a rectangle on any display to capture a cropped region."}
+                  ? `Selected area: ${Math.round(selectedSource.area.rect.size.width)} × ${Math.round(selectedSource.area.rect.size.height)} pt`
+                  : "Drag a rectangle on the chosen display to capture a cropped region."}
               </p>
               <button className="btn-secondary" type="button" onClick={() => void handleSelectArea()}>
                 {strings.chooseArea}
@@ -203,16 +315,17 @@ export function SetupModal({
           <label className="device-row">
             <input
               type="checkbox"
-              checked={micEnabled}
+              disabled={noMics}
+              checked={micEnabled && !noMics}
               onChange={(e) => setMicEnabled(e.target.checked)}
             />
             <span>{strings.microphone}</span>
             <select
-              disabled={!micEnabled}
+              disabled={!micEnabled || noMics}
               value={micId}
               onChange={(e) => setMicId(e.target.value)}
             >
-              {devices.microphones.length === 0 && <option value="">No microphone</option>}
+              {noMics && <option value="">No microphone</option>}
               {devices.microphones.map((m) => (
                 <option key={m.id} value={m.id}>
                   {m.name}
@@ -225,16 +338,17 @@ export function SetupModal({
           <label className="device-row">
             <input
               type="checkbox"
-              checked={camEnabled}
+              disabled={noCams}
+              checked={camEnabled && !noCams}
               onChange={(e) => setCamEnabled(e.target.checked)}
             />
             <span>{strings.camera}</span>
             <select
-              disabled={!camEnabled}
+              disabled={!camEnabled || noCams}
               value={camId}
               onChange={(e) => setCamId(e.target.value)}
             >
-              {devices.cameras.length === 0 && <option value="">No camera</option>}
+              {noCams && <option value="">No camera</option>}
               {devices.cameras.map((c) => (
                 <option key={c.id} value={c.id}>
                   {c.name}
@@ -250,7 +364,7 @@ export function SetupModal({
               onChange={(e) => setSystemAudio(e.target.checked)}
             />
             <span>{strings.systemAudio}</span>
-            <span className="muted-sm">48 kHz stereo</span>
+            <span className="muted-sm">WASAPI loopback • 48 kHz stereo</span>
           </label>
 
           <div className="device-row">

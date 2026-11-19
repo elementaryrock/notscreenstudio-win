@@ -70,7 +70,7 @@ fn coverage(d: f32) -> f32 {
 
 fn erfApprox(x: f32) -> f32 {
     let s = sign(x);
-    let a = abs(x);
+    let a = min(abs(x), 10.0);
     var t = 1.0 + (0.278393 + (0.230389 + 0.078108 * (a * a)) * a) * a;
     t = t * t;
     return s - s / (t * t);

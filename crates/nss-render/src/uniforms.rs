@@ -110,6 +110,14 @@ pub struct Scene<'a> {
     pub dither: bool,
 }
 
+fn finite_or(v: f64, fallback: f64) -> f64 {
+    if v.is_finite() {
+        v
+    } else {
+        fallback
+    }
+}
+
 /// Builds the uniform block for one frame.
 #[must_use]
 pub fn write(scene: &Scene<'_>) -> Uniforms {
@@ -150,10 +158,10 @@ pub fn write(scene: &Scene<'_>) -> Uniforms {
     let sh = &style.shadow;
     u.set(
         Slot::Shadow,
-        sh.radius.max(0.0) * h / 2.0,
-        sh.opacity.clamp(0.0, 1.0),
-        sh.offset_x * h,
-        sh.offset_y * h,
+        finite_or(sh.radius, 0.0).max(0.0) * h / 2.0,
+        finite_or(sh.opacity, 0.0).clamp(0.0, 1.0),
+        finite_or(sh.offset_x, 0.0) * h,
+        finite_or(sh.offset_y, 0.0) * h,
     );
 
     write_background(
@@ -162,7 +170,11 @@ pub fn write(scene: &Scene<'_>) -> Uniforms {
         scene.image,
         w,
         h,
-        scene.image_lod,
+        if scene.image_lod.is_finite() {
+            scene.image_lod.max(0.0)
+        } else {
+            0.0
+        },
     );
 
     // Cursor: the image for `shape`, hotspot on the position, squished around the hotspot.
@@ -172,7 +184,7 @@ pub fn write(scene: &Scene<'_>) -> Uniforms {
     } else {
         0.0
     };
-    if alpha > 0.0 {
+    if alpha > 0.0 && cs.position.x.is_finite() && cs.position.y.is_finite() {
         let cell = scene.atlas.cell(cs.shape);
         let press = if cs.press_scale.is_finite() {
             cs.press_scale.clamp(0.05, 4.0)
@@ -233,7 +245,11 @@ pub fn write(scene: &Scene<'_>) -> Uniforms {
     if style.cursor.click_ripples {
         let mut n = 0;
         for r in &cs.ripples {
-            if n >= MAX_RIPPLES || !(r.progress >= 0.0 && r.progress < 1.0) {
+            if n >= MAX_RIPPLES
+                || !(0.0..1.0).contains(&r.progress)
+                || !r.position.x.is_finite()
+                || !r.position.y.is_finite()
+            {
                 continue;
             }
             let p = layout.output_point(r.position);
@@ -260,14 +276,14 @@ pub fn write(scene: &Scene<'_>) -> Uniforms {
     // scale with the bubble.
     let bubble = &style.camera;
     if let Some(cam_size) = scene.camera {
-        if bubble.visible && bubble.size > 0.0 {
+        if bubble.visible && bubble.size.is_finite() && bubble.size > 0.0 {
             let r = layout.camera_bubble_rect(bubble);
             let k = layout.camera_bubble_size_multiplier(bubble);
             if r.size.width >= 0.5 && r.size.height >= 0.5 {
                 let border = bubble
                     .border
                     .as_ref()
-                    .map_or(0.0, |b| b.width.max(0.0) * h * k);
+                    .map_or(0.0, |b| finite_or(b.width, 0.0).max(0.0) * h * k);
                 u.set(
                     Slot::Bubble,
                     r.mid_x(),
@@ -309,16 +325,16 @@ pub fn write(scene: &Scene<'_>) -> Uniforms {
                         lin[0],
                         lin[1],
                         lin[2],
-                        border.color.a.clamp(0.0, 1.0),
+                        finite_or(border.color.a, 1.0).clamp(0.0, 1.0),
                     );
                 }
                 let bs = &style.shadow;
                 u.set(
                     Slot::BubbleShadow,
-                    bs.radius.max(0.0) * h / 2.0 * k,
-                    bs.opacity.clamp(0.0, 1.0),
-                    bs.offset_x * h * k,
-                    bs.offset_y * h * k,
+                    finite_or(bs.radius, 0.0).max(0.0) * h / 2.0 * k,
+                    finite_or(bs.opacity, 0.0).clamp(0.0, 1.0),
+                    finite_or(bs.offset_x, 0.0) * h * k,
+                    finite_or(bs.offset_y, 0.0) * h * k,
                 );
             }
         }

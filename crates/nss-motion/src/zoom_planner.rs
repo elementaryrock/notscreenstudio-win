@@ -127,7 +127,13 @@ impl ZoomPlanner {
         let mut events: Vec<ClickEvent> = clicks
             .iter()
             .copied()
-            .filter(|c| c.t.is_finite() && c.t >= 0.0 && c.t <= duration)
+            .filter(|c| {
+                c.t.is_finite()
+                    && c.x.is_finite()
+                    && c.y.is_finite()
+                    && c.t >= 0.0
+                    && c.t <= duration
+            })
             .collect();
         events.sort_by(|a, b| a.t.partial_cmp(&b.t).unwrap_or(std::cmp::Ordering::Equal));
 
@@ -304,14 +310,21 @@ impl ZoomPlanner {
                 continue;
             }
             let mut seg = match b.focus {
-                ZoomFocus::Manual(p) => ZoomSegment::new(
-                    start,
-                    end,
-                    Self::clamp_scale(b.scale, tuning),
-                    p.clamped(),
-                    None,
-                    ZoomOrigin::Manual(b.id),
-                ),
+                ZoomFocus::Manual(p) => {
+                    let safe_focus = if p.x.is_finite() && p.y.is_finite() {
+                        p.clamped()
+                    } else {
+                        NormalizedPoint::CENTER
+                    };
+                    ZoomSegment::new(
+                        start,
+                        end,
+                        Self::clamp_scale(b.scale, tuning),
+                        safe_focus,
+                        None,
+                        ZoomOrigin::Manual(b.id),
+                    )
+                }
                 ZoomFocus::Auto {} => {
                     // Follow the cursor. A click in the block's lead-in is where the action is:
                     // aim there first and start following from the click.
@@ -431,7 +444,12 @@ impl ZoomPlanner {
             .iter()
             .copied()
             .filter(|c| {
-                c.kind == ClickKind::Down && c.t.is_finite() && c.t >= start && c.t <= limit
+                c.kind == ClickKind::Down
+                    && c.t.is_finite()
+                    && c.x.is_finite()
+                    && c.y.is_finite()
+                    && c.t >= start
+                    && c.t <= limit
             })
             .min_by(|a, b| a.t.partial_cmp(&b.t).unwrap_or(std::cmp::Ordering::Equal))
     }

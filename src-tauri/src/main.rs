@@ -15,9 +15,11 @@ mod tray;
 mod win_shell;
 
 use app_model::AppState;
-use tauri::{Manager, RunEvent};
+use tauri::{Manager, RunEvent, WindowEvent};
 
 fn main() {
+    win_shell::enable_per_monitor_dpi_awareness();
+
     // Headless smoke test (`--smoke-test`): exercises core, motion, project bundle I/O, and
     // library listing without creating any GUI window, so CI builds can always verify the graph.
     if std::env::args().any(|a| a == "--smoke-test") {
@@ -81,6 +83,7 @@ fn main() {
             app_model::update_editor_project,
             app_model::plan_auto_zooms,
             app_model::render_preview_frame,
+            app_model::get_preview_layout,
             app_model::get_timeline_thumbnails,
             app_model::list_background_presets,
             app_model::list_system_wallpapers,
@@ -88,6 +91,26 @@ fn main() {
             app_model::start_export,
             app_model::cancel_export,
         ])
+        .on_window_event(|window, event| match event {
+            WindowEvent::CloseRequested { api, .. } if window.label() == "main" => {
+                let handle = window.app_handle();
+                let st = handle.state::<AppState>();
+                if st.is_busy_recording() {
+                    // Never destroy the main shell mid-recording; hide to system tray instead.
+                    api.prevent_close();
+                    let _ = window.hide();
+                } else {
+                    overlay::close_all_overlays(handle, &st.windows);
+                    st.shutdown();
+                    handle.exit(0);
+                }
+            }
+            WindowEvent::Destroyed => {
+                let st = window.app_handle().state::<AppState>();
+                st.windows.unregister_label(window.label());
+            }
+            _ => {}
+        })
         .build(tauri::generate_context!())
         .expect("failed to build the notscreenstudio shell");
 

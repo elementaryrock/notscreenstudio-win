@@ -6,13 +6,18 @@
 
 #![allow(unsafe_code)]
 
+use std::sync::mpsc;
+use std::time::Duration;
+
 use windows::core::PCWSTR;
 use windows::Graphics::Capture::{GraphicsCaptureAccess, GraphicsCaptureAccessKind};
 use windows::Security::Authorization::AppCapabilityAccess::AppCapabilityAccessStatus;
+use windows::Win32::Foundation::RPC_E_CHANGED_MODE;
 use windows::Win32::System::Registry::{
     RegCloseKey, RegOpenKeyExW, RegQueryValueExW, HKEY, HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE,
     KEY_READ, REG_SZ,
 };
+use windows::Win32::System::WinRT::{RoInitialize, RoUninitialize, RO_INIT_MULTITHREADED};
 
 use crate::permissions::PermissionStatus;
 
@@ -35,15 +40,38 @@ pub fn camera_status() -> PermissionStatus {
 
 /// Requests `GraphicsCaptureAccessKind::Borderless` once (ADR 0007).
 ///
-/// Returns `true` only if Windows explicitly granted borderless capture; returns `false` cleanly
-/// on Windows 10, unpackaged builds without the capability, or when refused. Never panics.
+/// Runs on a dedicated MTA worker thread with a bounded timeout so calling it can never deadlock
+/// an STA UI thread or hang indefinitely when Windows suppresses the prompt. Returns `true` only
+/// if Windows explicitly granted borderless capture; returns `false` cleanly on Windows 10,
+/// unpackaged builds without the capability, timeout, or refusal. Never panics.
 #[must_use]
 pub fn request_borderless_access() -> bool {
-    let Ok(op) = GraphicsCaptureAccess::RequestAccessAsync(GraphicsCaptureAccessKind::Borderless)
-    else {
+    let (tx, rx) = mpsc::sync_channel::<bool>(1);
+    let spawned = std::thread::Builder::new()
+        .name("nss-borderless-access".into())
+        .spawn(move || {
+            crate::win::wgc::ensure_process_mta();
+            // SAFETY: balanced WinRT MTA init on this dedicated thread.
+            let should_uninit = match unsafe { RoInitialize(RO_INIT_MULTITHREADED) } {
+                Ok(()) => true,
+                Err(e) if e.code() == RPC_E_CHANGED_MODE => false,
+                Err(_) => false,
+            };
+            let allowed =
+                GraphicsCaptureAccess::RequestAccessAsync(GraphicsCaptureAccessKind::Borderless)
+                    .ok()
+                    .and_then(|op| op.join().ok())
+                    .is_some_and(|status| status == AppCapabilityAccessStatus::Allowed);
+            if should_uninit {
+                // SAFETY: paired with successful `RoInitialize` above.
+                unsafe { RoUninitialize() };
+            }
+            let _ = tx.send(allowed);
+        });
+    if spawned.is_err() {
         return false;
-    };
-    matches!(op.join(), Ok(AppCapabilityAccessStatus::Allowed))
+    }
+    rx.recv_timeout(Duration::from_secs(2)).unwrap_or(false)
 }
 
 fn consent_store_status(subkey: &str) -> PermissionStatus {

@@ -54,7 +54,7 @@ impl RecentProjects {
 
     /// Moves (or adds) a project to the front and trims to `limit`.
     pub fn touch(&mut self, path: &str, name: &str, at: Timestamp) {
-        self.items.retain(|i| i.path != path);
+        self.items.retain(|i| !paths_equal(&i.path, path));
         self.items.insert(0, RecentProject::new(path, name, at));
         if self.items.len() > self.limit {
             self.items.truncate(self.limit);
@@ -62,7 +62,7 @@ impl RecentProjects {
     }
 
     pub fn remove(&mut self, path: &str) {
-        self.items.retain(|i| i.path != path);
+        self.items.retain(|i| !paths_equal(&i.path, path));
     }
 
     /// Drops entries whose bundle no longer exists. Returns true if anything changed.
@@ -70,6 +70,15 @@ impl RecentProjects {
         let before = self.items.len();
         self.items.retain(|i| exists(&i.path));
         self.items.len() != before
+    }
+}
+
+fn paths_equal(a: &str, b: &str) -> bool {
+    if cfg!(windows) {
+        a.replace('\\', "/")
+            .eq_ignore_ascii_case(&b.replace('\\', "/"))
+    } else {
+        a == b
     }
 }
 

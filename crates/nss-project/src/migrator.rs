@@ -65,21 +65,38 @@ impl ProjectMigrator {
             ));
         };
 
-        // A missing version means v1, matching `Project`'s decoder.
-        let mut version = match json.get("schemaVersion") {
+        // A missing version means v1, matching `Project`'s decoder. Non-integer values are
+        // corrupt rather than silently treated as v1; compare in i64 to avoid truncation.
+        let raw_version: i64 = match json.get("schemaVersion") {
             None | Some(Value::Null) => 1,
-            Some(v) => v.as_i64().map_or(1, |n| n as i32),
+            Some(v) => {
+                if let Some(n) = v.as_i64() {
+                    n
+                } else if v.as_u64().is_some() {
+                    return Err(ProjectMigrationError::NewerSchema {
+                        found: i32::MAX,
+                        supported: self.current_version,
+                    }
+                    .into());
+                } else {
+                    return Err(ProjectError::Corrupt(
+                        "project.json has a non-integer schemaVersion".to_owned(),
+                    ));
+                }
+            }
         };
-        if version == self.current_version {
+        if raw_version == i64::from(self.current_version) {
             return Ok(data.to_vec());
         }
-        if version > self.current_version {
+        if raw_version > i64::from(self.current_version) {
             return Err(ProjectMigrationError::NewerSchema {
-                found: version,
+                found: i32::try_from(raw_version).unwrap_or(i32::MAX),
                 supported: self.current_version,
             }
             .into());
         }
+        let mut version = i32::try_from(raw_version)
+            .map_err(|_| ProjectMigrationError::NoMigration { from: i32::MIN })?;
         while version < self.current_version {
             let Some(step) = self.steps.get(&version) else {
                 return Err(ProjectMigrationError::NoMigration { from: version }.into());

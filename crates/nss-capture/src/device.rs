@@ -198,6 +198,131 @@ impl MicRecorder {
     }
 }
 
+/// Records desktop/system audio via WASAPI loopback into `system_audio.m4a` (AAC) via FFmpeg,
+/// synced to `origin` and `pause` (padding silence whenever audio resumes after a quiet interval).
+pub struct SystemAudioRecorder {
+    #[cfg(windows)]
+    handle: Option<crate::win::devices::WasapiCaptureHandle>,
+    writer: Arc<Mutex<Option<PcmAudioWriter>>>,
+    packets_written: Arc<AtomicUsize>,
+    stopped: AtomicBool,
+}
+
+impl SystemAudioRecorder {
+    pub fn start<F>(
+        output_path: PathBuf,
+        origin: Arc<SharedOrigin>,
+        pause: Arc<PauseClock>,
+        on_failure: F,
+    ) -> Result<Self, NssError>
+    where
+        F: Fn(NssError) + Send + Sync + 'static,
+    {
+        #[cfg(windows)]
+        {
+            let writer_slot: Arc<Mutex<Option<PcmAudioWriter>>> = Arc::new(Mutex::new(None));
+            let packets_written = Arc::new(AtomicUsize::new(0));
+            let frames_written = Arc::new(AtomicUsize::new(0));
+            let on_failure = Arc::new(on_failure);
+            let format_slot: Arc<Mutex<Option<(u32, usize)>>> = Arc::new(Mutex::new(None));
+
+            let writer_cb = Arc::clone(&writer_slot);
+            let packets_cb = Arc::clone(&packets_written);
+            let frames_cb = Arc::clone(&frames_written);
+            let origin_cb = Arc::clone(&origin);
+            let pause_cb = Arc::clone(&pause);
+            let fail_cb = Arc::clone(&on_failure);
+            let fail_err = Arc::clone(&on_failure);
+            let fmt_cb = Arc::clone(&format_slot);
+
+            let handle = crate::win::devices::WasapiCaptureHandle::start_loopback(
+                move |pkt| {
+                    let Some(orig) = origin_cb.current() else {
+                        return;
+                    };
+                    if orig.is_entirely_before(pkt.host_time, 0.0) {
+                        return;
+                    }
+                    let Some(shifted) = pause_cb.retime(pkt.host_time) else {
+                        return;
+                    };
+                    let guard = writer_cb.lock();
+                    if let Some(ref w) = *guard {
+                        // WASAPI loopback stops delivering packets when no app plays audio; pad
+                        // silence up to the current media timestamp so playback stays lip-synced.
+                        if let Some((sr, ch)) = *fmt_cb.lock() {
+                            let rel_secs = orig.relative(shifted);
+                            let expected_frames = (rel_secs * f64::from(sr)).round() as usize;
+                            let already = frames_cb.load(Ordering::Relaxed);
+                            let gap_frames = expected_frames
+                                .saturating_sub(already)
+                                .saturating_sub(pkt.frames);
+                            if gap_frames > (sr as usize / 20) {
+                                // Cap each silence chunk so a huge clock anomaly can't OOM.
+                                let pad = gap_frames.min((sr as usize) * 60);
+                                let silence = vec![0.0f32; pad * ch];
+                                if w.write_samples(&silence).is_ok() {
+                                    frames_cb.fetch_add(pad, Ordering::Relaxed);
+                                }
+                            }
+                        }
+                        if let Err(e) = w.write_samples(&pkt.samples) {
+                            fail_cb(e);
+                        } else {
+                            packets_cb.fetch_add(1, Ordering::Relaxed);
+                            frames_cb.fetch_add(pkt.frames, Ordering::Relaxed);
+                        }
+                    }
+                },
+                move |err| {
+                    fail_err(err);
+                },
+            )?;
+
+            let ch = u32::from(handle.format.channels.clamp(1, 2));
+            *format_slot.lock() = Some((handle.format.sample_rate, ch as usize));
+            let cfg = AudioWriterConfig {
+                sample_rate: handle.format.sample_rate,
+                channels: ch,
+                bitrate: aac_bitrate(ch, f64::from(handle.format.sample_rate)),
+                output_path,
+            };
+            let writer = PcmAudioWriter::start(cfg)?;
+            *writer_slot.lock() = Some(writer);
+
+            Ok(Self {
+                handle: Some(handle),
+                writer: writer_slot,
+                packets_written,
+                stopped: AtomicBool::new(false),
+            })
+        }
+
+        #[cfg(not(windows))]
+        {
+            let _ = (output_path, origin, pause, on_failure);
+            Err(NssError::Unsupported(
+                "System audio loopback is only supported on Windows.".into(),
+            ))
+        }
+    }
+
+    pub fn stop(&mut self) -> Result<bool, NssError> {
+        if self.stopped.swap(true, Ordering::SeqCst) {
+            return Ok(self.packets_written.load(Ordering::Relaxed) > 0);
+        }
+        #[cfg(windows)]
+        if let Some(mut h) = self.handle.take() {
+            h.stop();
+        }
+        let writer = self.writer.lock().take();
+        if let Some(w) = writer {
+            w.finish()?;
+        }
+        Ok(self.packets_written.load(Ordering::Relaxed) > 0)
+    }
+}
+
 /// Records a webcam via Media Foundation into `camera.mov` via FFmpeg, synced to `origin` and `pause`.
 pub struct CameraRecorder {
     #[cfg(windows)]
@@ -284,6 +409,14 @@ impl CameraRecorder {
             Err(NssError::Unsupported(
                 "Camera capture is only supported on Windows.".into(),
             ))
+        }
+    }
+
+    /// Suspends or resumes camera CFR pacing while the recording is paused so camera frames stay
+    /// aligned with the screen timeline.
+    pub fn set_paused(&self, is_paused: bool) {
+        if let Some(ref w) = *self.writer.lock() {
+            w.set_paused(is_paused);
         }
     }
 

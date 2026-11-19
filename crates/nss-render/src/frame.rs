@@ -42,7 +42,10 @@ impl Image {
         if width == 0 || height == 0 {
             return Err(FrameError::Empty { width, height });
         }
-        let expected = width as usize * height as usize * BYTES_PER_PIXEL;
+        let expected = (width as usize)
+            .checked_mul(height as usize)
+            .and_then(|n| n.checked_mul(BYTES_PER_PIXEL))
+            .ok_or(FrameError::Empty { width, height })?;
         if pixels.len() != expected {
             return Err(FrameError::WrongLength {
                 width,
@@ -115,13 +118,17 @@ impl Image {
         if x >= self.width || y >= self.height {
             return [0; 4];
         }
-        let i = ((y * self.width + x) as usize) * BYTES_PER_PIXEL;
-        [
-            self.pixels[i],
-            self.pixels[i + 1],
-            self.pixels[i + 2],
-            self.pixels[i + 3],
-        ]
+        let Some(i) = (y as usize)
+            .checked_mul(self.width as usize)
+            .and_then(|n| n.checked_add(x as usize))
+            .and_then(|n| n.checked_mul(BYTES_PER_PIXEL))
+        else {
+            return [0; 4];
+        };
+        match self.pixels.get(i..i + 4) {
+            Some(px) => [px[0], px[1], px[2], px[3]],
+            None => [0; 4],
+        }
     }
 }
 

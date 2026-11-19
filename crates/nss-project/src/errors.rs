@@ -65,10 +65,12 @@ impl ProjectError {
     #[must_use]
     pub fn is_transient(&self) -> bool {
         match self {
-            Self::Io { source, .. } => matches!(
-                source.kind(),
-                std::io::ErrorKind::PermissionDenied | std::io::ErrorKind::Interrupted
-            ),
+            Self::Io { source, .. } => {
+                matches!(
+                    source.kind(),
+                    std::io::ErrorKind::PermissionDenied | std::io::ErrorKind::Interrupted
+                ) || matches!(source.raw_os_error(), Some(32 | 33))
+            }
             _ => false,
         }
     }

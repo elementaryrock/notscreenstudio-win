@@ -359,6 +359,18 @@ export function formatDurationShort(seconds: number): string {
   return `${mins}:${String(secs).padStart(2, "0")}`;
 }
 
+/** Floored live recording timer matching Rust `format_elapsed` (`MM:SS` or `H:MM:SS`). */
+export function formatElapsedTimer(seconds: number): string {
+  const total = Number.isFinite(seconds) ? Math.max(0, Math.floor(seconds)) : 0;
+  const h = Math.floor(total / 3600);
+  const m = Math.floor((total % 3600) / 60);
+  const s = total % 60;
+  if (h > 0) {
+    return `${h}:${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
+  }
+  return `${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
+}
+
 /** Converts CoreFoundation reference-date seconds (2001-01-01Z) into a readable local date. */
 export function formatCfDate(cfSeconds: number): string {
   const unixMs = (cfSeconds + 978307200) * 1000;

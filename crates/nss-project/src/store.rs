@@ -194,8 +194,12 @@ impl FileProjectStore {
         let project = match Self::read_project(&self.migrator, &primary) {
             Ok(project) => project,
             Err(primary_error) => {
-                // A newer-schema file must not be silently replaced by an older backup.
-                if matches!(primary_error, ProjectError::Migration(_)) {
+                // A newer-schema file or transient I/O error must not be silently replaced by an
+                // older backup.
+                if matches!(
+                    primary_error,
+                    ProjectError::Migration(_) | ProjectError::Io { .. }
+                ) {
                     return Err(primary_error);
                 }
                 match Self::read_project(&self.migrator, &reference.backup_file()) {
@@ -212,7 +216,13 @@ impl FileProjectStore {
         let leaf = file
             .file_name()
             .map_or_else(String::new, |n| n.to_string_lossy().into_owned());
-        let data = fs::read(file).map_err(|_| ProjectError::Corrupt(format!("Missing {leaf}")))?;
+        let data = atomic_file::read_with_retry(file).map_err(|e| {
+            if e.kind() == std::io::ErrorKind::NotFound {
+                ProjectError::Corrupt(format!("Missing {leaf}"))
+            } else {
+                ProjectError::io(file, e)
+            }
+        })?;
         let migrated = migrator.migrate(&data)?;
         let project: Project = serde_json::from_slice(&migrated)
             .map_err(|e| ProjectError::Corrupt(format!("Corrupt {leaf}: {e}")))?;
@@ -279,16 +289,26 @@ impl FileProjectStore {
 
     // MARK: Cursor track
 
-    /// A missing `cursor.json` yields an empty track (the video is still usable); a corrupt one
-    /// is an error.
+    /// A missing `cursor.json` yields an empty track (the video is still usable); a corrupt or
+    /// unreadable one is an error.
     pub fn load_cursor_track(
         &self,
         reference: &ProjectReference,
         assets: &RecordingAssets,
     ) -> Result<CursorTrack, ProjectError> {
+        if !RecordingAssets::is_safe_file_name(&assets.cursor_file) {
+            return Err(ProjectError::Corrupt(format!(
+                "Cursor track names a file outside the project: {}",
+                assets.cursor_file
+            )));
+        }
         let file = reference.url.join(&assets.cursor_file);
-        let Ok(data) = fs::read(&file) else {
-            return Ok(CursorTrack::default());
+        let data = match atomic_file::read_with_retry(&file) {
+            Ok(data) => data,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                return Ok(CursorTrack::default());
+            }
+            Err(e) => return Err(ProjectError::io(&file, e)),
         };
         serde_json::from_slice(&data)
             .map_err(|e| ProjectError::Corrupt(format!("Corrupt {}: {e}", assets.cursor_file)))
@@ -300,6 +320,12 @@ impl FileProjectStore {
         reference: &ProjectReference,
         assets: &RecordingAssets,
     ) -> Result<(), ProjectError> {
+        if !RecordingAssets::is_safe_file_name(&assets.cursor_file) {
+            return Err(ProjectError::Corrupt(format!(
+                "Cursor track names a file outside the project: {}",
+                assets.cursor_file
+            )));
+        }
         // Compact: this is the largest file in the bundle (120 samples/s).
         let data = serde_json::to_vec(track)
             .map_err(|e| ProjectError::Corrupt(format!("cannot encode cursor track: {e}")))?;
@@ -334,8 +360,9 @@ impl FileProjectStore {
             .map(|e| e.path())
             .filter(|p| p.is_dir() && has_project_extension(p))
             .map(|p| {
-                let modified = fs::metadata(&p)
+                let modified = fs::metadata(p.join(ProjectReference::PROJECT_FILE_NAME))
                     .and_then(|m| m.modified())
+                    .or_else(|_| fs::metadata(&p).and_then(|m| m.modified()))
                     .unwrap_or(std::time::UNIX_EPOCH);
                 (modified, ProjectReference::new(p))
             })
@@ -398,20 +425,20 @@ pub fn sanitize_name(name: &str) -> String {
         out.push(if bad { '-' } else { ch });
     }
     let mut s = out.trim().to_owned();
-    while s.starts_with('.') {
-        s.remove(0);
-    }
-    // Windows cannot create a name ending in a dot or a space.
-    while s.ends_with('.') || s.ends_with(' ') {
-        s.pop();
+    loop {
+        let trimmed = s.trim_matches(|c: char| c == '.' || c.is_whitespace());
+        if trimmed.len() == s.len() {
+            break;
+        }
+        s = trimmed.to_owned();
     }
     if s.chars().count() > MAX_BUNDLE_NAME {
         s = s.chars().take(MAX_BUNDLE_NAME).collect::<String>();
-        while s.ends_with('.') || s.ends_with(' ') {
+        while s.ends_with('.') || s.ends_with(|c: char| c.is_whitespace()) {
             s.pop();
         }
     }
-    let stem = s.split('.').next().unwrap_or("").to_lowercase();
+    let stem = s.split('.').next().unwrap_or("").trim().to_lowercase();
     if RESERVED_NAMES.contains(&stem.as_str()) {
         s = format!("_{s}");
     }

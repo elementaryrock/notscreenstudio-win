@@ -179,6 +179,34 @@ impl PreviewEngine {
         Ok((rendered.width, rendered.height, rendered.pixels))
     }
 
+    /// Exact `RenderLayout` geometry at `t` for `(max_width, max_height)` so the editor canvas can
+    /// map pointer clicks between output canvas space and normalized source space without drift.
+    #[must_use]
+    pub fn layout_at(
+        &self,
+        t: MediaTime,
+        max_width: u32,
+        max_height: u32,
+    ) -> nss_render::RenderLayout {
+        let clamped_t = t.clamp(0.0, self.duration);
+        let state = self.motion.frame_state(clamped_t);
+        let out_size = fitted_preview_size(
+            self.project
+                .style
+                .aspect_ratio
+                .output_size(nss_core::ExportResolution::P1080)
+                .aspect(),
+            max_width.clamp(64, 1920),
+            max_height.clamp(64, 1080),
+        );
+        nss_render::RenderLayout::new(
+            out_size,
+            self.project.assets.source_pixel_size,
+            &self.project.style,
+            state.camera,
+        )
+    }
+
     /// Extracts `count` evenly spaced downscaled RGBA thumbnails from the screen recording for the
     /// timeline video strip.
     #[must_use]

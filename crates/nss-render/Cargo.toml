@@ -13,5 +13,5 @@ thiserror = { workspace = true }
 wgpu = "30"
 pollster = "0.4"
 half = "2"
-# PNG/JPEG decode only: background images are the one thing the renderer reads from disk.
-image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
+# PNG/JPEG/WebP/BMP decode for user background images and Windows wallpapers.
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp", "bmp"] }

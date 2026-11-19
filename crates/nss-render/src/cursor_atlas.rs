@@ -313,10 +313,10 @@ struct Art {
     accents: Vec<Prim>,
 }
 
-fn rot90(points: &[(f64, f64)], width: f64) -> Vec<(f64, f64)> {
-    // (x, y) -> (width - y, x): a quarter turn, which is what the vertical I-beam and the
-    // up/down resize cursor are.
-    points.iter().map(|(x, y)| (width - y, *x)).collect()
+fn rot90(points: &[(f64, f64)], height: f64) -> Vec<(f64, f64)> {
+    // (x, y) -> (height - y, x): a quarter turn clockwise of a `width x height` art box into
+    // `height x width`, which is what the vertical I-beam and up/down resize cursors are.
+    points.iter().map(|(x, y)| (height - y, *x)).collect()
 }
 
 fn arrow_art() -> Art {
@@ -380,14 +380,15 @@ fn i_beam_art() -> Art {
 
 fn i_beam_vertical_art() -> Art {
     let mut a = i_beam_art();
+    let h = a.size.1;
     let convert = |p: &Prim| match p {
-        Prim::Poly(points) => Prim::Poly(rot90(points, a.size.0)),
+        Prim::Poly(points) => Prim::Poly(rot90(points, h)),
         Prim::Stroke {
             points,
             width,
             closed,
         } => Prim::Stroke {
-            points: rot90(points, a.size.0),
+            points: rot90(points, h),
             width: *width,
             closed: *closed,
         },
@@ -574,8 +575,9 @@ fn double_arrow_art() -> Art {
 
 fn double_arrow_vertical_art() -> Art {
     let mut a = double_arrow_art();
+    let h = a.size.1;
     let convert = |p: &Prim| match p {
-        Prim::Poly(points) => Prim::Poly(rot90(points, a.size.0)),
+        Prim::Poly(points) => Prim::Poly(rot90(points, h)),
         Prim::Rect {
             x0,
             y0,
@@ -583,7 +585,7 @@ fn double_arrow_vertical_art() -> Art {
             y1,
             radius: _,
         } => {
-            let pts = rot90(&[(*x0, *y0), (*x1, *y0), (*x1, *y1), (*x0, *y1)], a.size.0);
+            let pts = rot90(&[(*x0, *y0), (*x1, *y0), (*x1, *y1), (*x0, *y1)], h);
             Prim::Poly(pts)
         }
         other => other.clone(),
@@ -595,32 +597,22 @@ fn double_arrow_vertical_art() -> Art {
 }
 
 fn single_arrow(keep_left: bool) -> Art {
-    let mut a = double_arrow_art();
-    a.size = (13.0, 16.0);
-    a.hotspot = if keep_left { (2.0, 8.0) } else { (11.0, 8.0) };
-    a.fill.retain(|p| match p {
-        Prim::Poly(points) => {
-            let tip = points[0].0;
-            if keep_left {
-                tip < 1.0
-            } else {
-                tip > 23.0
-            }
-        }
-        _ => false,
-    });
-    let bar_x0 = if keep_left { 0.0 } else { 7.0 };
-    a.fill.push(Prim::Rect {
-        x0: bar_x0,
-        y0: 6.6,
-        x1: bar_x0 + 7.0,
-        y1: 9.4,
-        radius: 0.8,
-    });
-    if !keep_left {
-        // Mirror the surviving arrow head so it points left from the right edge.
-        a.fill = a
-            .fill
+    // Left-pointing arrow in a 13x16 pt box: arrowhead at [0, 7] and stem bar at [6, 13].
+    let mut fill = vec![
+        Prim::Poly(vec![(0.0, 8.0), (7.0, 2.6), (7.0, 13.4)]),
+        Prim::Rect {
+            x0: 6.0,
+            y0: 6.6,
+            x1: 13.0,
+            y1: 9.4,
+            radius: 0.8,
+        },
+    ];
+    let hotspot = if keep_left {
+        (2.0, 8.0)
+    } else {
+        // Mirror horizontally across x = 6.5 so the arrowhead tip lands at x = 13.0.
+        fill = fill
             .iter()
             .map(|p| match p {
                 Prim::Poly(points) => {
@@ -642,28 +634,33 @@ fn single_arrow(keep_left: bool) -> Art {
                 other => other.clone(),
             })
             .collect();
+        (11.0, 8.0)
+    };
+    Art {
+        size: (13.0, 16.0),
+        hotspot,
+        fill,
+        outline: Vec::new(),
+        accents: Vec::new(),
     }
-    a
 }
 
 fn single_vertical_arrow(keep_top: bool) -> Art {
     let mut a = single_arrow(true);
-    // Rotate the left arrow a quarter turn: pointing up, bar below the head.
+    let h = a.size.1;
+    // Rotate the 13x16 left arrow a quarter turn clockwise into 16x13: pointing up, bar below.
     a.fill = a
         .fill
         .iter()
         .map(|p| match p {
-            Prim::Poly(points) => Prim::Poly(rot90(points, 13.0)),
+            Prim::Poly(points) => Prim::Poly(rot90(points, h)),
             Prim::Rect {
                 x0,
                 y0,
                 x1,
                 y1,
                 radius: _,
-            } => Prim::Poly(rot90(
-                &[(*x0, *y0), (*x1, *y0), (*x1, *y1), (*x0, *y1)],
-                13.0,
-            )),
+            } => Prim::Poly(rot90(&[(*x0, *y0), (*x1, *y0), (*x1, *y1), (*x0, *y1)], h)),
             other => other.clone(),
         })
         .collect();

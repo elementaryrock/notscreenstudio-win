@@ -58,20 +58,40 @@ export function EditorView({
   const [selectedZoomId, setSelectedZoomId] = useState<string | null>(null);
   const [playing, setPlaying] = useState(false);
   const [playheadTime, setPlayheadTime] = useState(0);
+  const [glideTick, setGlideTick] = useState(0);
+  const [titleDraft, setTitleDraft] = useState("");
   const [showExport, setShowExport] = useState(false);
 
   const easingRef = useRef<PlayheadEasing>(new PlayheadEasing(0));
-  const latestProjectRef = useRef<Project | null>(null);
+  const undoRef = useRef<UndoState<Project> | null>(null);
+  const latestProjectRef = useRef<{ url: string; project: Project } | null>(null);
+  const pushSeqRef = useRef(0);
+  const appliedSeqRef = useRef(0);
+
+  undoRef.current = undo;
 
   // Load bundle into PreviewEngine.
   useEffect(() => {
     let active = true;
+    const targetUrl = reference.url;
+    latestProjectRef.current = null;
+    undoRef.current = null;
+    pushSeqRef.current = 0;
+    appliedSeqRef.current = 0;
+    setUndo(null);
+    setSelectedZoomId(null);
+    setPlaying(false);
+    setError(null);
+
     void (async () => {
       try {
         const dto = await openEditorProject(reference);
         if (!active) return;
-        setUndo(createUndoState(dto.project));
-        latestProjectRef.current = dto.project;
+        const initialUndo = createUndoState(dto.project);
+        undoRef.current = initialUndo;
+        setUndo(initialUndo);
+        setTitleDraft(dto.project.name);
+        latestProjectRef.current = { url: targetUrl, project: dto.project };
         setTrack(dto.track);
         setDuration(Math.max(dto.duration, 0.1));
         setRendererName(dto.rendererName);
@@ -86,63 +106,96 @@ export function EditorView({
     })();
     return () => {
       active = false;
-      if (latestProjectRef.current) {
-        void updateEditorProject(reference, latestProjectRef.current, true);
+      const latest = latestProjectRef.current;
+      if (latest && latest.url === targetUrl) {
+        void updateEditorProject(reference, latest.project, true).catch(() => { });
       }
     };
   }, [reference.url]);
 
   const project = undo?.present ?? null;
 
+  useEffect(() => {
+    if (project) {
+      setTitleDraft(project.name);
+    }
+  }, [project?.name]);
+
   const pushToBackend = useCallback(
     (next: Project, immediate = false) => {
-      latestProjectRef.current = next;
-      void updateEditorProject(reference, next, immediate);
-      setRevision((r) => r + 1);
+      latestProjectRef.current = { url: reference.url, project: next };
+      const seq = ++pushSeqRef.current;
+      const finish = () => {
+        if (seq > appliedSeqRef.current) {
+          appliedSeqRef.current = seq;
+          setRevision((r) => r + 1);
+        }
+      };
+      void updateEditorProject(reference, next, immediate).then(finish, finish);
     },
     [reference],
   );
 
   const commitProject = useCallback(
     (next: Project) => {
-      setUndo((prev) => (prev ? commitEdit(prev, next) : prev));
+      setUndo((prev) => {
+        if (!prev) return prev;
+        const updated = commitEdit(prev, next);
+        undoRef.current = updated;
+        return updated;
+      });
       pushToBackend(next, false);
     },
     [pushToBackend],
   );
 
   const beginDrag = useCallback(() => {
-    setUndo((prev) => (prev ? beginDragEdit(prev) : prev));
+    setUndo((prev) => {
+      if (!prev) return prev;
+      const updated = beginDragEdit(prev);
+      undoRef.current = updated;
+      return updated;
+    });
   }, []);
 
   const dragProject = useCallback(
     (next: Project) => {
-      setUndo((prev) => (prev ? updateDragEdit(prev, next) : prev));
+      setUndo((prev) => {
+        if (!prev) return prev;
+        const updated = updateDragEdit(prev, next);
+        undoRef.current = updated;
+        return updated;
+      });
       pushToBackend(next, false);
     },
     [pushToBackend],
   );
 
   const endDrag = useCallback(() => {
-    setUndo((prev) => (prev ? endDragEdit(prev) : prev));
+    setUndo((prev) => {
+      if (!prev) return prev;
+      const updated = endDragEdit(prev);
+      undoRef.current = updated;
+      return updated;
+    });
   }, []);
 
   const handleUndo = useCallback(() => {
-    setUndo((prev) => {
-      if (!prev || prev.past.length === 0) return prev;
-      const next = undoEdit(prev);
-      pushToBackend(next.present, false);
-      return next;
-    });
+    const cur = undoRef.current;
+    if (!cur || cur.past.length === 0) return;
+    const next = undoEdit(cur);
+    undoRef.current = next;
+    setUndo(next);
+    pushToBackend(next.present, false);
   }, [pushToBackend]);
 
   const handleRedo = useCallback(() => {
-    setUndo((prev) => {
-      if (!prev || prev.future.length === 0) return prev;
-      const next = redoEdit(prev);
-      pushToBackend(next.present, false);
-      return next;
-    });
+    const cur = undoRef.current;
+    if (!cur || cur.future.length === 0) return;
+    const next = redoEdit(cur);
+    undoRef.current = next;
+    setUndo(next);
+    pushToBackend(next.present, false);
   }, [pushToBackend]);
 
   const handleTogglePlay = useCallback(() => {
@@ -181,6 +234,7 @@ export function EditorView({
       const clamped = Math.min(duration, Math.max(0, t));
       easingRef.current.glide(clamped);
       setPlayheadTime(easingRef.current.value);
+      setGlideTick((g) => g + 1);
     },
     [project, duration],
   );
@@ -195,12 +249,14 @@ export function EditorView({
     [duration],
   );
 
+  const hasProject = project !== null;
+  const trimEnd = project ? resolvedTrimEnd(project.timeline.trim, duration) : duration;
+
   // Playback & PlayheadEasing animation loop.
   useEffect(() => {
-    if (!project) return;
+    if (!hasProject) return;
     let rafId = 0;
     let lastTs = performance.now();
-    const trimEnd = resolvedTrimEnd(project.timeline.trim, duration);
 
     const tick = (now: number) => {
       const dt = Math.min(0.1, Math.max(0, (now - lastTs) / 1000));
@@ -220,7 +276,9 @@ export function EditorView({
       } else if (easingRef.current.isAnimating) {
         const next = easingRef.current.advance(dt);
         setPlayheadTime(next);
-        rafId = requestAnimationFrame(tick);
+        if (easingRef.current.isAnimating) {
+          rafId = requestAnimationFrame(tick);
+        }
       }
     };
 
@@ -228,7 +286,7 @@ export function EditorView({
       rafId = requestAnimationFrame(tick);
     }
     return () => cancelAnimationFrame(rafId);
-  }, [playing, playheadTime, project, duration]);
+  }, [playing, glideTick, hasProject, trimEnd]);
 
   // Global editor keyboard shortcuts.
   useEffect(() => {
@@ -278,8 +336,13 @@ export function EditorView({
 
   const handleBack = async (): Promise<void> => {
     setPlaying(false);
-    if (latestProjectRef.current) {
-      await updateEditorProject(reference, latestProjectRef.current, true);
+    const latest = latestProjectRef.current;
+    if (latest && latest.url === reference.url) {
+      try {
+        await updateEditorProject(reference, latest.project, true);
+      } catch {
+        // Don't trap the user in the editor on a transient flush error.
+      }
     }
     onBack();
   };
@@ -337,6 +400,17 @@ export function EditorView({
     });
   };
 
+  const commitTitle = (): void => {
+    const trimmed = titleDraft.trim();
+    if (!trimmed) {
+      setTitleDraft(project.name);
+      return;
+    }
+    if (trimmed !== project.name) {
+      commitProject({ ...project, name: trimmed });
+    }
+  };
+
   return (
     <div className="editor-shell">
       <header className="editor-topbar">
@@ -346,9 +420,18 @@ export function EditorView({
           </button>
           <input
             className="editor-title-input"
-            value={project.name}
+            value={titleDraft}
             aria-label="Project title"
-            onChange={(e) => commitProject({ ...project, name: e.target.value })}
+            onChange={(e) => setTitleDraft(e.target.value)}
+            onBlur={commitTitle}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") {
+                e.currentTarget.blur();
+              } else if (e.key === "Escape") {
+                setTitleDraft(project.name);
+                e.currentTarget.blur();
+              }
+            }}
           />
         </div>
 

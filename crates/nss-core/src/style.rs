@@ -297,7 +297,10 @@ impl<'de> Deserialize<'de> for LegacyCameraShape {
                     match key.as_str() {
                         "roundedRect" => {
                             let payload: Option<RoundedRectPayload> = map.next_value()?;
-                            let r = payload.and_then(|p| p.radius).unwrap_or(0.2);
+                            let r = payload
+                                .and_then(|p| p.radius)
+                                .filter(|v| v.is_finite())
+                                .unwrap_or(0.2);
                             out = LegacyCameraShape {
                                 shape: CameraShape::Square,
                                 // radius is a fraction of half the width in Round 1.
@@ -374,13 +377,19 @@ impl CameraBubbleGeometry {
     /// Radius = roundness * shorter side / 2; a circle is always fully round.
     #[must_use]
     pub fn layout(shape: CameraShape, roundness: f64, width: f64) -> BubbleLayout {
-        let w = width.max(0.0);
+        let w = if width.is_finite() {
+            width.max(0.0)
+        } else {
+            0.0
+        };
         let h = w / Self::aspect(shape);
         let shorter = w.min(h);
         let r = if shape == CameraShape::Circle {
             1.0
-        } else {
+        } else if roundness.is_finite() {
             roundness.clamp(0.0, 1.0)
+        } else {
+            0.0
         };
         BubbleLayout {
             width: w,
@@ -393,6 +402,9 @@ impl CameraBubbleGeometry {
     /// `REFERENCE_ZOOM` or more (smoothstep).
     #[must_use]
     pub fn size_multiplier(camera_scale: f64, zoomed_scale: f64) -> f64 {
+        if !camera_scale.is_finite() || !zoomed_scale.is_finite() {
+            return 1.0;
+        }
         let t = ((camera_scale - 1.0) / (Self::REFERENCE_ZOOM - 1.0)).clamp(0.0, 1.0);
         let s = t * t * (3.0 - 2.0 * t);
         1.0 + (zoomed_scale - 1.0) * s

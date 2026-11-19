@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { renderPreviewFrame } from "../ipc";
+import { getPreviewLayout, renderPreviewFrame } from "../ipc";
 import { formatTimecode } from "../editor/editorLogic";
-import type { NormalizedPoint, Project, ZoomBlock } from "../types";
+import type { NormalizedPoint, PreviewLayoutDto, Project, ZoomBlock } from "../types";
 
 interface PreviewCanvasProps {
   project: Project;
@@ -39,11 +39,21 @@ export function PreviewCanvas({
   const [stageSize, setStageSize] = useState<{ w: number; h: number }>({ w: 960, h: 540 });
   const [frameMs, setFrameMs] = useState<number | null>(null);
   const [renderError, setRenderError] = useState<string | null>(null);
+  const [layout, setLayout] = useState<PreviewLayoutDto | null>(null);
 
+  const mountedRef = useRef(true);
+  const layoutRef = useRef<PreviewLayoutDto | null>(null);
   const inFlightRef = useRef(false);
   const pendingRef = useRef<{ time: number; rev: number; maxW: number; maxH: number } | null>(null);
   const lastStatsAtRef = useRef(0);
   const draggingCamRef = useRef(false);
+
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
 
   // Measure available preview stage so GPU preview scales crisply without over-rendering.
   useEffect(() => {
@@ -62,7 +72,7 @@ export function PreviewCanvas({
   }, []);
 
   const pumpRender = useCallback(async () => {
-    if (inFlightRef.current) return;
+    if (inFlightRef.current || !mountedRef.current) return;
     const req = pendingRef.current;
     if (!req) return;
     pendingRef.current = null;
@@ -71,6 +81,7 @@ export function PreviewCanvas({
     const t0 = performance.now();
     try {
       const pkt = await renderPreviewFrame(req.time, req.maxW, req.maxH);
+      if (!mountedRef.current) return;
       const elapsed = performance.now() - t0;
       const canvas = canvasRef.current;
       if (pkt && canvas) {
@@ -84,6 +95,16 @@ export function PreviewCanvas({
           ctx.putImageData(img, 0, 0);
         }
       }
+      try {
+        const nextLayout = await getPreviewLayout(req.time, req.maxW, req.maxH);
+        if (mountedRef.current) {
+          layoutRef.current = nextLayout;
+          setLayout(nextLayout);
+        }
+      } catch {
+        // Non-fatal; fallback uses raw canvas coordinates.
+      }
+      if (!mountedRef.current) return;
       const now = performance.now();
       if (now - lastStatsAtRef.current > 220) {
         lastStatsAtRef.current = now;
@@ -91,10 +112,12 @@ export function PreviewCanvas({
       }
       setRenderError(null);
     } catch (e) {
-      setRenderError(e instanceof Error ? e.message : String(e));
+      if (mountedRef.current) {
+        setRenderError(e instanceof Error ? e.message : String(e));
+      }
     } finally {
       inFlightRef.current = false;
-      if (pendingRef.current) {
+      if (mountedRef.current && pendingRef.current) {
         void pumpRender();
       }
     }
@@ -125,9 +148,52 @@ export function PreviewCanvas({
 
   const handleCanvasClick = (e: React.MouseEvent<HTMLCanvasElement>): void => {
     if (!manualFocus) return;
-    const pt = clientToNormalized(e.clientX, e.clientY);
-    if (pt) onPickManualFocus(pt);
+    const canvasPt = clientToNormalized(e.clientX, e.clientY);
+    if (!canvasPt) return;
+    const l = layoutRef.current;
+    if (
+      l &&
+      l.width > 0 &&
+      l.height > 0 &&
+      l.contentWidth > 0 &&
+      l.contentHeight > 0 &&
+      l.cameraScale > 0
+    ) {
+      const outX = canvasPt.x * l.width;
+      const outY = canvasPt.y * l.height;
+      const ux = (outX - l.contentX) / l.contentWidth;
+      const uy = (outY - l.contentY) / l.contentHeight;
+      const srcX = Math.min(1, Math.max(0, l.cameraCenterX + (ux - 0.5) / l.cameraScale));
+      const srcY = Math.min(1, Math.max(0, l.cameraCenterY + (uy - 0.5) / l.cameraScale));
+      onPickManualFocus({ x: srcX, y: srcY });
+      return;
+    }
+    onPickManualFocus(canvasPt);
   };
+
+  const reticleStyle = (() => {
+    if (!manualFocus) return null;
+    if (
+      !layout ||
+      layout.width <= 0 ||
+      layout.height <= 0 ||
+      layout.contentWidth <= 0 ||
+      layout.contentHeight <= 0
+    ) {
+      return {
+        left: `${manualFocus.x * 100}%`,
+        top: `${manualFocus.y * 100}%`,
+      };
+    }
+    const ux = (manualFocus.x - layout.cameraCenterX) * layout.cameraScale + 0.5;
+    const uy = (manualFocus.y - layout.cameraCenterY) * layout.cameraScale + 0.5;
+    const outX = layout.contentX + ux * layout.contentWidth;
+    const outY = layout.contentY + uy * layout.contentHeight;
+    return {
+      left: `${Math.min(100, Math.max(0, (outX / layout.width) * 100))}%`,
+      top: `${Math.min(100, Math.max(0, (outY / layout.height) * 100))}%`,
+    };
+  })();
 
   const handleCameraPointerDown = (e: React.PointerEvent<HTMLDivElement>): void => {
     e.stopPropagation();
@@ -168,18 +234,15 @@ export function PreviewCanvas({
             onClick={handleCanvasClick}
           />
 
-          {manualFocus && (
+          {reticleStyle && (
             <div
               className="focus-reticle"
-              style={{
-                left: `${manualFocus.x * 100}%`,
-                top: `${manualFocus.y * 100}%`,
-              }}
+              style={reticleStyle}
               title="Manual zoom focus"
             />
           )}
 
-          {project.style.camera.visible && (
+          {project.style.camera.visible && project.assets.cameraFile !== null && (
             <div
               className="camera-drag-handle"
               style={{

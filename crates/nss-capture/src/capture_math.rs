@@ -177,9 +177,12 @@ pub struct CaptureFilePlan {
     pub screen: String,
     pub camera: Option<String>,
     pub mic: Option<String>,
+    pub system_audio: Option<String>,
 }
 
 impl CaptureFilePlan {
+    pub const DEFAULT_SYSTEM_AUDIO_FILE: &'static str = "system_audio.m4a";
+
     #[must_use]
     pub fn new(options: &RecordingOptions) -> Self {
         Self {
@@ -192,6 +195,9 @@ impl CaptureFilePlan {
                 .mic_device_id
                 .as_ref()
                 .map(|_| RecordingAssets::DEFAULT_MIC_FILE.to_owned()),
+            system_audio: options
+                .capture_system_audio
+                .then(|| Self::DEFAULT_SYSTEM_AUDIO_FILE.to_owned()),
         }
     }
 

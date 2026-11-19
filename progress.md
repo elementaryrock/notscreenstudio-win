@@ -160,3 +160,25 @@ See [PLAN.md](./PLAN.md) for architecture, milestones, and invariants, and [CONT
 - [x] Release build verified (`cargo build --release -p notscreenstudio-win-app` + `target/release/notscreenstudio.exe --smoke-test` exit 0; MSI/NSIS config in `src-tauri/tauri.conf.json` & `scripts/build.ps1`)
 - [x] Write `docs/RELEASE.md` & update `README.md` with complete features, build/package steps, and documented Windows limitations (`PORT_STAGE = 10`)
 - [x] Final full gate (`./scripts/test.ps1`) green, update `PLAN.md` & `progress.md`, final commit
+
+---
+
+## Post-Stage-10 — Full Codebase Line-by-Line Audit & Stability Hardening (DONE)
+
+Comprehensive line-by-line review and live dual-monitor hardware verification eliminating hangs (`0xCFFFFFFF`), access violations (`0xC0000005`), HiDPI resolution double-scaling, multi-GPU secondary-monitor capture issues, and subtle bugs across all 7 Rust crates, `src-tauri`, and `ui/src`:
+
+- [x] **`nss-core` & `nss-motion` hardening**: UTF-8 safe `from_hex`, checked finite `Timestamp::to_system_time`, Windows reserved device-name / control-char / trailing-dot validation in `is_safe_file_name`, `CursorState` camelCase serde alignment, finite guards across `CursorTrack`, `CameraBubbleGeometry`, `Spring`, `MotionTuning`, and `ZoomPlanner`.
+- [x] **`nss-project` Windows durability**: sharing-violation retry (`read_with_retry`) on project/cursor reads without misclassifying transient `Io` errors as corrupt `.bak` fallbacks; `AutosaveDebouncer` write-lock ordering, clean shutdown locking, and normalized Windows path keys; deterministic duplicate-ID assignment, `CREATE_NO_WINDOW` + 15 s timeout in `FfmpegThumbnailer`; non-integer/i64 `schemaVersion` validation; STA/MTA-safe `windows_trash.rs` with `\\?\` stripping and root-path guards.
+- [x] **`nss-render` GPU & rasterizer correctness**: `webp`/`bmp` decoding + `with_guessed_format` + texture dimension clamp + negative-cached `Arc<DecodedImage>`; fixed `rot90` and rotated/mirrored cursor atlas shapes; pre-warp mesh UV matching `frame.wgsl`; clamped `erfApprox` in WGSL; cover-mode `image_lod` using `out_size`; cached `is_supported()`, `wgpu::ErrorScope`, and staging cleanup on error.
+- [x] **`nss-capture`, `nss-input`, `nss-export` dual-monitor / HiDPI / multi-GPU fixes**:
+  - Fixed DPI double-scaling in `Monitor::pixel_size()` (uses physical pixels directly from `GetMonitorInfoW` under Per-Monitor DPI v2; enabled explicit `SetProcessDpiAwarenessContext(PER_MONITOR_AWARE_V2)` at startup).
+  - Fixed `0xC0000005` crash in `GraphicsCapture.dll` on multi-session / dual-monitor teardown by pinning process-wide WinRT MTA via `CoIncrementMTAUsage` (`ensure_process_mta`), synchronizing `FrameArrived` shutdown behind `StagingState::closed`, and matching each capture's D3D11 device to the DXGI adapter owning the target `HMONITOR` (verified 6/6 consecutive passes across Intel UHD primary + NVIDIA RTX 4050 secondary displays).
+  - Added WASAPI loopback `SystemAudioRecorder` (`system_audio.m4a`) with >2-channel stereo downmix & silence padding, wired into `nss-export`'s `AudioMixPlan`.
+  - Fixed webcam `MF_MT_DEFAULT_STRIDE` bottom-up/padded copy and camera pause/resume gating; added async FFmpeg stderr draining in `writer.rs`; fixed `WH_MOUSE_LL` message-queue readiness (`PeekMessageW` before signaling TID) and `GetMessageW > 0` loop.
+- [x] **`src-tauri` shell deadlock & overlay fixes**:
+  - Eliminated `0xCFFFFFFF` (`STATUS_APPLICATION_HANG`) WebView2 STA deadlock by converting blocking/WinRT/GPU/FFmpeg/overlay `#[tauri::command]` handlers to `async fn` + `spawn_blocking`.
+  - Fixed `WindowRegistry` HWND tracking by label, target-monitor physical-pixel placement for HUD bars & secondary-monitor `AreaSelection`, `recording_gen`/`export_gen` race guards, real 6 s FFmpeg demo clip generation, `get_preview_layout` projection command, and clean `CloseRequested` / tray hide / shutdown handling.
+- [x] **`ui/src/` React & TypeScript fixes**:
+  - Removed double-DPR scaling in `AreaSelectionHud` and wired secondary-monitor `?displayId=` routing; validated stale saved source/mic/camera IDs against live hardware in `SetupModal` & `SetupBarHud`; synced `hud-mode` transparent window class before first paint; added StrictMode listener cleanup guards across all views.
+  - Fixed `EditorView` RAF loop, sequenced `updateEditorProject` before preview revision bumps, StrictMode-safe undo/redo, debounced title editing, `PreviewCanvas` exact `RenderLayout` manual-focus projection & reticle mapping, `TimelinePanel` pointer capture + click suppression + playhead trim clamping, `InspectorPanel` manual-preserving auto-zoom regeneration & color-picker undo coalescing, and `ExportModal` codec guards.
+- [x] **Verification**: `./scripts/test.ps1` (fmt, `clippy -D warnings`, all Rust/GPU/export/UI tests, Vite build, `--smoke-test`), all 4 CI static audits (unsafe, privacy, neutrality, ASCII `.ps1`), live dual-monitor multi-GPU WGC tests, and release `notscreenstudio.exe` launch + clean exit verified green.

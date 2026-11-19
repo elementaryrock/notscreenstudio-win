@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   checkFfmpeg,
   getPermissions,
@@ -32,25 +32,51 @@ export function SettingsModal({
   const [ffmpeg, setFfmpeg] = useState<FfmpegStatusDto | null>(null);
   const [draft, setDraft] = useState<ShellSettings>(settings);
   const [savedBanner, setSavedBanner] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const savedTimerRef = useRef<number | null>(null);
 
   useEffect(() => {
-    void (async () => {
-      const [p, ff] = await Promise.all([getPermissions(), checkFfmpeg()]);
-      setPerms(p);
-      setFfmpeg(ff);
-    })();
+    let active = true;
+    void Promise.all([getPermissions(), checkFfmpeg()])
+      .then(([p, ff]) => {
+        if (!active) return;
+        setPerms(p);
+        setFfmpeg(ff);
+      })
+      .catch((e) => {
+        if (active) setError(e instanceof Error ? e.message : String(e));
+      });
+    return () => {
+      active = false;
+      if (savedTimerRef.current !== null) {
+        window.clearTimeout(savedTimerRef.current);
+      }
+    };
   }, []);
 
   const handleSave = async (): Promise<void> => {
-    const saved = await saveSettings(draft);
-    onSettingsChange(saved);
-    setSavedBanner(true);
-    setTimeout(() => setSavedBanner(false), 1800);
+    setError(null);
+    try {
+      const saved = await saveSettings(draft);
+      onSettingsChange(saved);
+      setSavedBanner(true);
+      if (savedTimerRef.current !== null) {
+        window.clearTimeout(savedTimerRef.current);
+      }
+      savedTimerRef.current = window.setTimeout(() => setSavedBanner(false), 1800);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    }
   };
 
   const handleBorderless = async (): Promise<void> => {
-    const next = await requestBorderlessAccess();
-    setPerms(next);
+    setError(null);
+    try {
+      const next = await requestBorderlessAccess();
+      setPerms(next);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    }
   };
 
   return (
@@ -89,9 +115,16 @@ export function SettingsModal({
             <button
               className="btn-secondary"
               type="button"
+              disabled={
+                perms?.borderlessCapture === "granted" || perms?.borderlessCapture === "denied"
+              }
               onClick={() => void handleBorderless()}
             >
-              {perms?.borderlessCapture === "granted" ? "Granted" : strings.requestBorderless}
+              {perms?.borderlessCapture === "granted"
+                ? "Granted"
+                : perms?.borderlessCapture === "denied"
+                  ? "Declined (restart to retry)"
+                  : strings.requestBorderless}
             </button>
           </div>
           <div className="perm-row">
@@ -182,6 +215,8 @@ export function SettingsModal({
             />
           </div>
         </section>
+
+        {error && <div className="inline-error">{error}</div>}
 
         <footer className="modal-footer">
           <span className="muted-sm">{savedBanner ? "Saved." : "Offline only • zero telemetry"}</span>

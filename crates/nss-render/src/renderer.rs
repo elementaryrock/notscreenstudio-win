@@ -16,6 +16,7 @@
 
 use std::borrow::Cow;
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, OnceLock};
 
 use nss_core::{Background, BackgroundBlur, FrameState, NssError, PixelSize, Style};
 
@@ -181,14 +182,14 @@ impl GpuTexture {
 }
 
 struct DecodedImage {
-    path: PathBuf,
-    stamp: ImageStamp,
     /// Level 0 first, sRGB RGBA8.
     mips: Vec<(u32, u32, Vec<u8>)>,
 }
 
 struct ImageCacheEntry {
-    decoded: Option<DecodedImage>,
+    path: PathBuf,
+    stamp: ImageStamp,
+    decoded: Option<Arc<DecodedImage>>,
 }
 
 struct BlurCacheEntry {
@@ -533,10 +534,44 @@ impl Renderer {
     /// Loads and caches the background image for `style` now, so the first frame that needs it does
     /// not pay the decode cost.
     pub fn preload(&mut self, style: &Style) {
-        let _ = self.background_texture(style);
+        let _ = self.background_texture(style, PixelSize::new(1920, 1080));
     }
 
     // MARK: - FrameRenderer
+
+    fn validate_image(&self, img: &Image, label: &str) -> Result<(), RenderError> {
+        if img.width == 0 || img.height == 0 {
+            return Err(RenderError::Frame(crate::frame::FrameError::Empty {
+                width: img.width,
+                height: img.height,
+            }));
+        }
+        let max_dim = self.device.limits().max_texture_dimension_2d;
+        if img.width > max_dim || img.height > max_dim {
+            return Err(RenderError::Unsupported(format!(
+                "{label} {}x{} exceeds GPU max texture dimension ({max_dim})",
+                img.width, img.height
+            )));
+        }
+        let expected = (img.width as usize)
+            .checked_mul(img.height as usize)
+            .and_then(|n| n.checked_mul(crate::frame::BYTES_PER_PIXEL))
+            .ok_or_else(|| {
+                RenderError::Unsupported(format!(
+                    "{label} {}x{} pixel buffer size overflows",
+                    img.width, img.height
+                ))
+            })?;
+        if img.pixels.len() != expected {
+            return Err(RenderError::Frame(crate::frame::FrameError::WrongLength {
+                width: img.width,
+                height: img.height,
+                expected,
+                actual: img.pixels.len(),
+            }));
+        }
+        Ok(())
+    }
 
     fn render_impl(
         &mut self,
@@ -548,152 +583,194 @@ impl Renderer {
     ) -> Result<Frame, RenderError> {
         let out_w = output_size.width.max(1);
         let out_h = output_size.height.max(1);
+        let limits = self.device.limits();
+        let max_dim = limits.max_texture_dimension_2d;
+        if out_w > max_dim || out_h > max_dim {
+            return Err(RenderError::Unsupported(format!(
+                "output {}x{} exceeds GPU max texture dimension ({max_dim})",
+                out_w, out_h
+            )));
+        }
+        self.validate_image(screen, "screen")?;
+        if let Some(c) = camera {
+            self.validate_image(c, "camera")?;
+        }
 
-        // Screen.
-        let screen_tex = self.upload_screen(screen);
-        // Camera, only when the bubble will actually be drawn.
-        let camera_tex = camera.map(|c| self.upload_camera(c));
+        let clamped_out = PixelSize::new(out_w, out_h);
 
-        // Background image (decoded + optionally blurred), if the style wants one.
-        let (image_size, image_lod, image_view) = match self.background_texture(style) {
-            BackgroundTexture::None => (None, 0.0, None),
-            BackgroundTexture::Sharp { size, lod, view } => (Some(size), lod, Some(view)),
-            BackgroundTexture::Blurred { size, view } => (Some(size), 0.0, Some(view)),
-        };
+        let oom_scope = self.device.push_error_scope(wgpu::ErrorFilter::OutOfMemory);
+        let val_scope = self.device.push_error_scope(wgpu::ErrorFilter::Validation);
 
-        let layout =
-            crate::layout::RenderLayout::new(output_size, screen.size(), style, state.camera);
-        let uniforms = uniforms::write(&Scene {
-            layout: &layout,
-            state,
-            style,
-            camera: camera.map(|c| c.size()),
-            image: image_size,
-            image_lod,
-            atlas: &self.atlas,
-            dither: true,
-        });
-        uniforms.write_bytes(&mut self.uniform_bytes);
-        self.queue
-            .write_buffer(&self.uniform_buffer, 0, &self.uniform_bytes);
+        let result = (|| -> Result<Frame, RenderError> {
+            // Screen.
+            let screen_tex = self.upload_screen(screen);
+            // Camera, only when the bubble will actually be drawn.
+            let camera_tex = camera.map(|c| self.upload_camera(c));
 
-        let out = self.ensure_output(out_w, out_h);
-        let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("nss bind group"),
-            layout: &self.bind_layout,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: self.uniform_buffer.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: wgpu::BindingResource::Sampler(&self.sampler),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 2,
-                    resource: wgpu::BindingResource::Sampler(&self.atlas_sampler),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 3,
-                    resource: wgpu::BindingResource::TextureView(&screen_tex.view),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 4,
-                    resource: wgpu::BindingResource::TextureView(
-                        camera_tex.as_ref().map_or(&self.blank.view, |c| &c.view),
-                    ),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 5,
-                    resource: wgpu::BindingResource::TextureView(
-                        image_view.as_ref().unwrap_or(&self.blank.view),
-                    ),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 6,
-                    resource: wgpu::BindingResource::TextureView(&self.atlas_tex.view),
-                },
-            ],
-        });
+            // Background image (decoded + optionally blurred), if the style wants one.
+            let (image_size, image_lod, image_view) =
+                match self.background_texture(style, clamped_out) {
+                    BackgroundTexture::None => (None, 0.0, None),
+                    BackgroundTexture::Sharp { size, lod, view } => (Some(size), lod, Some(view)),
+                    BackgroundTexture::Blurred { size, view } => (Some(size), 0.0, Some(view)),
+                };
 
-        let mut encoder = self
-            .device
-            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                label: Some("nss frame"),
+            let layout =
+                crate::layout::RenderLayout::new(clamped_out, screen.size(), style, state.camera);
+            let uniforms = uniforms::write(&Scene {
+                layout: &layout,
+                state,
+                style,
+                camera: camera.map(|c| c.size()),
+                image: image_size,
+                image_lod,
+                atlas: &self.atlas,
+                dither: true,
             });
-        {
-            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("nss compositor"),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &out.view,
-                    depth_slice: None,
-                    resolve_target: None,
-                    ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
-                        store: wgpu::StoreOp::Store,
+            uniforms.write_bytes(&mut self.uniform_bytes);
+            self.queue
+                .write_buffer(&self.uniform_buffer, 0, &self.uniform_bytes);
+
+            let out = self.ensure_output(out_w, out_h);
+            let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("nss bind group"),
+                layout: &self.bind_layout,
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: self.uniform_buffer.as_entire_binding(),
                     },
-                })],
-                depth_stencil_attachment: None,
-                occlusion_query_set: None,
-                timestamp_writes: None,
-                multiview_mask: None,
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: wgpu::BindingResource::Sampler(&self.sampler),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 2,
+                        resource: wgpu::BindingResource::Sampler(&self.atlas_sampler),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 3,
+                        resource: wgpu::BindingResource::TextureView(&screen_tex.view),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 4,
+                        resource: wgpu::BindingResource::TextureView(
+                            camera_tex.as_ref().map_or(&self.blank.view, |c| &c.view),
+                        ),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 5,
+                        resource: wgpu::BindingResource::TextureView(
+                            image_view.as_ref().unwrap_or(&self.blank.view),
+                        ),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 6,
+                        resource: wgpu::BindingResource::TextureView(&self.atlas_tex.view),
+                    },
+                ],
             });
-            pass.set_pipeline(&self.pipeline);
-            pass.set_bind_group(0, &bind_group, &[]);
-            pass.draw(0..3, 0..1);
-        }
 
-        // Copy the result out through the padded staging buffer (the copy stride must be a multiple
-        // of 256 bytes, so the row padding is stripped below).
-        let (staging, padded_row, _) = self.ensure_staging(out_w, out_h);
-        encoder.copy_texture_to_buffer(
-            wgpu::TexelCopyTextureInfo {
-                texture: &out.texture,
-                mip_level: 0,
-                origin: wgpu::Origin3d::ZERO,
-                aspect: wgpu::TextureAspect::All,
-            },
-            wgpu::TexelCopyBufferInfo {
-                buffer: &staging,
-                layout: wgpu::TexelCopyBufferLayout {
-                    offset: 0,
-                    bytes_per_row: Some(padded_row),
-                    rows_per_image: Some(out_h),
+            let mut encoder = self
+                .device
+                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                    label: Some("nss frame"),
+                });
+            {
+                let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                    label: Some("nss compositor"),
+                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                        view: &out.view,
+                        depth_slice: None,
+                        resolve_target: None,
+                        ops: wgpu::Operations {
+                            load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                            store: wgpu::StoreOp::Store,
+                        },
+                    })],
+                    depth_stencil_attachment: None,
+                    occlusion_query_set: None,
+                    timestamp_writes: None,
+                    multiview_mask: None,
+                });
+                pass.set_pipeline(&self.pipeline);
+                pass.set_bind_group(0, &bind_group, &[]);
+                pass.draw(0..3, 0..1);
+            }
+
+            // Copy the result out through the padded staging buffer (the copy stride must be a
+            // multiple of 256 bytes, so the row padding is stripped below).
+            let (staging, padded_row, _) = self.ensure_staging(out_w, out_h)?;
+            encoder.copy_texture_to_buffer(
+                wgpu::TexelCopyTextureInfo {
+                    texture: &out.texture,
+                    mip_level: 0,
+                    origin: wgpu::Origin3d::ZERO,
+                    aspect: wgpu::TextureAspect::All,
                 },
-            },
-            wgpu::Extent3d {
-                width: out_w,
-                height: out_h,
-                depth_or_array_layers: 1,
-            },
-        );
-        self.queue.submit(Some(encoder.finish()));
+                wgpu::TexelCopyBufferInfo {
+                    buffer: &staging,
+                    layout: wgpu::TexelCopyBufferLayout {
+                        offset: 0,
+                        bytes_per_row: Some(padded_row),
+                        rows_per_image: Some(out_h),
+                    },
+                },
+                wgpu::Extent3d {
+                    width: out_w,
+                    height: out_h,
+                    depth_or_array_layers: 1,
+                },
+            );
+            self.queue.submit(Some(encoder.finish()));
 
-        let slice = staging.slice(..);
-        let (tx, rx) = std::sync::mpsc::channel();
-        slice.map_async(wgpu::MapMode::Read, move |res| {
-            let _ = tx.send(res);
-        });
-        self.device.poll(wgpu::PollType::wait_indefinitely()).ok();
-        match rx.recv() {
-            Ok(Ok(())) => {}
-            Ok(Err(e)) => return Err(RenderError::Device(format!("readback failed: {e}"))),
-            Err(e) => return Err(RenderError::Device(format!("readback callback lost: {e}"))),
-        }
+            let slice = staging.slice(..);
+            let (tx, rx) = std::sync::mpsc::channel();
+            slice.map_async(wgpu::MapMode::Read, move |res| {
+                let _ = tx.send(res);
+            });
+            if let Err(e) = self.device.poll(wgpu::PollType::wait_indefinitely()) {
+                self.staging = None;
+                return Err(RenderError::Device(format!("GPU poll failed: {e}")));
+            }
+            match rx.try_recv() {
+                Ok(Ok(())) => {}
+                Ok(Err(e)) => {
+                    self.staging = None;
+                    return Err(RenderError::Device(format!("readback failed: {e}")));
+                }
+                Err(e) => {
+                    self.staging = None;
+                    return Err(RenderError::Device(format!("readback callback lost: {e}")));
+                }
+            }
 
-        let map = slice
-            .get_mapped_range()
-            .map_err(|e| RenderError::Device(format!("readback map failed: {e}")))?;
-        let row_bytes = out_w as usize * 4;
-        let mut pixels = Vec::with_capacity(row_bytes * out_h as usize);
-        for row in 0..out_h as usize {
-            let start = row * padded_row as usize;
-            pixels.extend_from_slice(&map[start..start + row_bytes]);
+            let map = match slice.get_mapped_range() {
+                Ok(m) => m,
+                Err(e) => {
+                    staging.unmap();
+                    self.staging = None;
+                    return Err(RenderError::Device(format!("readback map failed: {e}")));
+                }
+            };
+            let row_bytes = out_w as usize * 4;
+            let mut pixels = Vec::with_capacity(row_bytes * out_h as usize);
+            for row in 0..out_h as usize {
+                let start = row * padded_row as usize;
+                pixels.extend_from_slice(&map[start..start + row_bytes]);
+            }
+            drop(map);
+            staging.unmap();
+            Ok(Image::new(out_w, out_h, pixels)?)
+        })();
+
+        let val_err = pollster::block_on(val_scope.pop());
+        let oom_err = pollster::block_on(oom_scope.pop());
+        if let Some(err) = val_err.or(oom_err) {
+            self.staging = None;
+            return Err(RenderError::Device(format!("GPU error: {err}")));
         }
-        drop(map);
-        staging.unmap();
-        Ok(Image::new(out_w, out_h, pixels)?)
+        result
     }
 
     // MARK: - Resources
@@ -783,10 +860,27 @@ impl Renderer {
         }
     }
 
-    fn ensure_staging(&mut self, width: u32, height: u32) -> (wgpu::Buffer, u32, u32) {
-        let row = width * 4;
-        let padded = row.div_ceil(256) * 256;
-        let needed = u64::from(padded) * u64::from(height);
+    fn ensure_staging(
+        &mut self,
+        width: u32,
+        height: u32,
+    ) -> Result<(wgpu::Buffer, u32, u32), RenderError> {
+        let row_u64 = u64::from(width) * 4;
+        let padded_u64 = row_u64.div_ceil(256) * 256;
+        let padded = u32::try_from(padded_u64).map_err(|_| {
+            RenderError::Unsupported(format!("staging row stride overflows for width {width}"))
+        })?;
+        let needed = padded_u64.checked_mul(u64::from(height)).ok_or_else(|| {
+            RenderError::Unsupported(format!(
+                "staging buffer size overflows for {width}x{height}"
+            ))
+        })?;
+        let max_buf = self.device.limits().max_buffer_size;
+        if needed > max_buf {
+            return Err(RenderError::Unsupported(format!(
+                "staging buffer ({needed} bytes) exceeds GPU limit ({max_buf} bytes)"
+            )));
+        }
         let recreate = self
             .staging
             .as_ref()
@@ -804,11 +898,11 @@ impl Renderer {
             ));
         }
         let (b, p, h) = self.staging.as_ref().expect("just ensured");
-        (b.clone(), *p, *h)
+        Ok((b.clone(), *p, *h))
     }
 
     /// Resolves a style's background image to a texture, caching the decode and the blur.
-    fn background_texture(&mut self, style: &Style) -> BackgroundTexture {
+    fn background_texture(&mut self, style: &Style, out_size: PixelSize) -> BackgroundTexture {
         let file = match &style.background {
             Background::Image { file } => file.clone(),
             Background::SystemWallpaper { path } => path.clone(),
@@ -819,27 +913,22 @@ impl Renderer {
         }
         let path = self.resolve(&file);
         let stamp = ImageStamp::of(&path);
+        let max_side = MAX_IMAGE_SIDE.min(self.device.limits().max_texture_dimension_2d);
 
-        let decoded = match &self.image_cache {
-            Some(entry)
-                if entry
-                    .decoded
-                    .as_ref()
-                    .is_some_and(|d| d.path == path && d.stamp == stamp) =>
-            {
-                entry.decoded.as_ref().map(read_decoded)
-            }
+        let decoded: Option<Arc<DecodedImage>> = match &self.image_cache {
+            Some(entry) if entry.path == path && entry.stamp == stamp => entry.decoded.clone(),
             _ => {
                 let decoded = if stamp.exists() {
-                    decode_image(&path, stamp)
+                    decode_image(&path, max_side).map(Arc::new)
                 } else {
                     None
                 };
-                self.image_cache = Some(ImageCacheEntry { decoded });
-                self.image_cache
-                    .as_ref()
-                    .and_then(|e| e.decoded.as_ref())
-                    .map(read_decoded)
+                self.image_cache = Some(ImageCacheEntry {
+                    path: path.clone(),
+                    stamp,
+                    decoded: decoded.clone(),
+                });
+                decoded
             }
         };
         let Some(decoded) = decoded else {
@@ -892,10 +981,11 @@ impl Renderer {
             .as_ref()
             .and_then(|b| b.texture.as_ref())
             .expect("just uploaded");
-        // Trilinear from level 0 with the footprint's LOD, so a big downscale picks a coarser mip.
-        let lod = (f64::from(size.width) / f64::from(short_side.max(1)))
-            .log2()
-            .max(0.0);
+        // Trilinear from level 0 using the actual cover-mode source-texels-per-output-pixel ratio.
+        let scale_x = f64::from(size.width) / f64::from(out_size.width.max(1));
+        let scale_y = f64::from(size.height) / f64::from(out_size.height.max(1));
+        let max_mip = decoded.mips.len().saturating_sub(1) as f64;
+        let lod = scale_x.min(scale_y).max(1.0).log2().clamp(0.0, max_mip);
         BackgroundTexture::Sharp {
             size,
             lod: lod as f32,
@@ -1057,14 +1147,6 @@ enum BackgroundTexture {
     },
 }
 
-fn read_decoded(d: &DecodedImage) -> DecodedImage {
-    DecodedImage {
-        path: d.path.clone(),
-        stamp: d.stamp,
-        mips: d.mips.clone(),
-    }
-}
-
 fn sampler_entry(binding: u32) -> wgpu::BindGroupLayoutEntry {
     wgpu::BindGroupLayoutEntry {
         binding,
@@ -1087,12 +1169,17 @@ fn texture_entry(binding: u32) -> wgpu::BindGroupLayoutEntry {
     }
 }
 
-/// Decodes an image file, downscales it to at most 4096 px on the longer side, and builds a mip
-/// chain in linear light.
-fn decode_image(path: &Path, stamp: ImageStamp) -> Option<DecodedImage> {
-    let img = image::open(path).ok()?;
+/// Decodes an image file (sniffing bytes so extensionless Windows wallpapers work too), downscales
+/// it to at most `max_side` px on the longer side, and builds a mip chain in linear light.
+fn decode_image(path: &Path, max_side: u32) -> Option<DecodedImage> {
+    let reader = image::ImageReader::open(path)
+        .ok()?
+        .with_guessed_format()
+        .ok()?;
+    let img = reader.decode().ok()?;
     let (w, h) = (img.width().max(1), img.height().max(1));
-    let scale = (MAX_IMAGE_SIDE as f64 / f64::from(w.max(h))).min(1.0);
+    let limit = max_side.max(1);
+    let scale = (f64::from(limit) / f64::from(w.max(h))).min(1.0);
     let rgba = if scale < 1.0 {
         let nw = ((f64::from(w) * scale).round() as u32).max(1);
         let nh = ((f64::from(h) * scale).round() as u32).max(1);
@@ -1111,11 +1198,7 @@ fn decode_image(path: &Path, stamp: ImageStamp) -> Option<DecodedImage> {
         cw = nw;
         ch = nh;
     }
-    Some(DecodedImage {
-        path: path.to_path_buf(),
-        stamp,
-        mips,
-    })
+    Some(DecodedImage { mips })
 }
 
 /// Box downsample in linear light, back to sRGB bytes (Metal's `generateMipmaps` does the same for
@@ -1151,10 +1234,49 @@ fn downsample_linear(src: &[u8], sw: u32, sh: u32, dw: u32, dh: u32) -> Vec<u8> 
 
 /// `true` when this machine can run the GPU compositor (the shell falls back to
 /// [`crate::passthrough::PassthroughRenderer`] otherwise, exactly like upstream on a Mac without
-/// Metal).
+/// Metal). Cached process-wide and probed lightly on a worker thread so it never blocks an STA UI
+/// thread or rebuilds the cursor atlas.
 #[must_use]
 pub fn is_supported() -> bool {
-    Renderer::new().is_ok()
+    static SUPPORTED: OnceLock<bool> = OnceLock::new();
+    *SUPPORTED.get_or_init(|| {
+        std::thread::Builder::new()
+            .name("nss-gpu-probe".to_owned())
+            .spawn(|| {
+                let backends = wgpu::Backends::from_env().unwrap_or(wgpu::Backends::PRIMARY);
+                let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
+                    backends,
+                    ..wgpu::InstanceDescriptor::new_without_display_handle()
+                });
+                let adapter = [
+                    wgpu::RequestAdapterOptions {
+                        power_preference: wgpu::PowerPreference::HighPerformance,
+                        ..wgpu::RequestAdapterOptions::default()
+                    },
+                    wgpu::RequestAdapterOptions {
+                        power_preference: wgpu::PowerPreference::LowPower,
+                        force_fallback_adapter: true,
+                        ..wgpu::RequestAdapterOptions::default()
+                    },
+                ]
+                .into_iter()
+                .find_map(|opts| pollster::block_on(instance.request_adapter(&opts)).ok());
+                let Some(adapter) = adapter else {
+                    return false;
+                };
+                pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
+                    label: Some("nss-render-probe"),
+                    required_features: wgpu::Features::empty(),
+                    required_limits:
+                        wgpu::Limits::downlevel_defaults().using_resolution(adapter.limits()),
+                    ..wgpu::DeviceDescriptor::default()
+                }))
+                .is_ok()
+            })
+            .ok()
+            .and_then(|h| h.join().ok())
+            .unwrap_or(false)
+    })
 }
 
 #[cfg(test)]

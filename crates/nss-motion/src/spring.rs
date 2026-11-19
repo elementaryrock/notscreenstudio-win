@@ -38,8 +38,25 @@ impl Spring {
     /// Displacement is `value - target`; the target is held constant over `dt`.
     #[must_use]
     pub fn evolve(self, x0: f64, v0: f64, dt: f64) -> (f64, f64) {
+        if !x0.is_finite()
+            || !v0.is_finite()
+            || !self.response.is_finite()
+            || !self.damping_ratio.is_finite()
+        {
+            return (0.0, 0.0);
+        }
+        if !dt.is_finite() {
+            return if dt.is_sign_positive() {
+                (0.0, 0.0)
+            } else {
+                (x0, v0)
+            };
+        }
         let w = self.angular_frequency();
-        let z = self.damping_ratio.max(0.0);
+        if !w.is_finite() || w <= 0.0 {
+            return (x0, v0);
+        }
+        let z = self.damping_ratio.clamp(0.0, 1e6);
         let t = dt.max(0.0);
         if (z - 1.0).abs() < 1e-6 {
             // Critically damped: x = (c1 + c2·t)·e^{-w t}
@@ -59,7 +76,11 @@ impl Spring {
             let r = (z * z - 1.0).sqrt();
             let r1 = -w * (z - r);
             let r2 = -w * (z + r);
-            let a = (v0 - r2 * x0) / (r1 - r2);
+            let denom = r1 - r2;
+            if denom.abs() < 1e-12 || !denom.is_finite() {
+                return (x0, v0);
+            }
+            let a = (v0 - r2 * x0) / denom;
             let b = x0 - a;
             let (e1, e2) = ((r1 * t).exp(), (r2 * t).exp());
             (a * e1 + b * e2, a * r1 * e1 + b * r2 * e2)

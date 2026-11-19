@@ -4,7 +4,7 @@
 //! (AAC in M4A) through a bounded background channel so the real-time WGC / WASAPI / MF threads
 //! never block on disk or encoder I/O.
 
-use std::io::Write;
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -34,13 +34,15 @@ pub fn find_ffmpeg() -> Result<PathBuf, NssError> {
             }
         }
     }
-    // Probe `ffmpeg` on PATH.
-    let probe = Command::new("ffmpeg")
-        .arg("-version")
+    // Probe `ffmpeg` on PATH without flashing a console window on Windows.
+    let mut cmd = Command::new("ffmpeg");
+    cmd.arg("-version")
         .stdin(Stdio::null())
         .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status();
+        .stderr(Stdio::null());
+    #[cfg(windows)]
+    cmd.creation_flags(CREATE_NO_WINDOW);
+    let probe = cmd.status();
     match probe {
         Ok(st) if st.success() => Ok(PathBuf::from("ffmpeg")),
         _ => Err(NssError::Unsupported(
@@ -342,6 +344,27 @@ fn spawn_ffmpeg(ffmpeg: &Path, args: &[String]) -> Result<Child, NssError> {
     })
 }
 
+fn drain_stderr_async(stderr: Option<std::process::ChildStderr>) -> JoinHandle<Vec<u8>> {
+    thread::spawn(move || {
+        let mut buf = Vec::new();
+        if let Some(mut s) = stderr {
+            // Drain all of stderr so FFmpeg can never block on a full OS pipe buffer, while
+            // retaining up to 64 KiB for error diagnostics.
+            let mut chunk = [0u8; 4096];
+            while let Ok(n) = s.read(&mut chunk) {
+                if n == 0 {
+                    break;
+                }
+                let remaining = (64 * 1024usize).saturating_sub(buf.len());
+                if remaining > 0 {
+                    buf.extend_from_slice(&chunk[..n.min(remaining)]);
+                }
+            }
+        }
+        buf
+    })
+}
+
 fn pump_video_child(
     mut child: Child,
     rx: mpsc::Receiver<Vec<u8>>,
@@ -351,6 +374,7 @@ fn pump_video_child(
     failed: Arc<AtomicBool>,
     paused: Arc<AtomicBool>,
 ) -> Result<usize, NssError> {
+    let stderr_handle = drain_stderr_async(child.stderr.take());
     let mut write_err: Option<std::io::Error> = None;
     let frame_step = Duration::from_secs_f64(1.0 / f64::from(fps.max(1)));
     {
@@ -434,16 +458,17 @@ fn pump_video_child(
         let _ = stdin.flush();
     }
 
-    let output = child
-        .wait_with_output()
+    let status = child
+        .wait()
         .map_err(|e| NssError::Io(format!("Failed waiting for FFmpeg: {e}")))?;
+    let stderr_bytes = stderr_handle.join().unwrap_or_default();
     let count = written_frames.load(Ordering::Relaxed);
 
     if let Some(err) = write_err {
-        return Err(map_writer_io_error(&err, &output.stderr));
+        return Err(map_writer_io_error(&err, &stderr_bytes));
     }
-    if count > 0 && !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
+    if count > 0 && !status.success() {
+        let stderr = String::from_utf8_lossy(&stderr_bytes);
         if stderr.to_lowercase().contains("no space left") {
             return Err(NssError::Io(
                 "Recording stopped because the disk is full.".into(),
@@ -451,7 +476,7 @@ fn pump_video_child(
         }
         return Err(NssError::Io(format!(
             "FFmpeg failed while writing video ({}): {}",
-            output.status,
+            status,
             stderr.trim()
         )));
     }
@@ -463,6 +488,7 @@ fn pump_audio_child(
     rx: mpsc::Receiver<Vec<u8>>,
     failed: Arc<AtomicBool>,
 ) -> Result<(), NssError> {
+    let stderr_handle = drain_stderr_async(child.stderr.take());
     let mut write_err: Option<std::io::Error> = None;
     let mut wrote_any = false;
     {
@@ -481,17 +507,18 @@ fn pump_audio_child(
         let _ = stdin.flush();
     }
 
-    let output = child
-        .wait_with_output()
+    let status = child
+        .wait()
         .map_err(|e| NssError::Io(format!("Failed waiting for FFmpeg audio: {e}")))?;
+    let stderr_bytes = stderr_handle.join().unwrap_or_default();
     if let Some(err) = write_err {
-        return Err(map_writer_io_error(&err, &output.stderr));
+        return Err(map_writer_io_error(&err, &stderr_bytes));
     }
-    if wrote_any && !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
+    if wrote_any && !status.success() {
+        let stderr = String::from_utf8_lossy(&stderr_bytes);
         return Err(NssError::Io(format!(
             "FFmpeg failed while writing audio ({}): {}",
-            output.status,
+            status,
             stderr.trim()
         )));
     }

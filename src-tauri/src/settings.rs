@@ -29,6 +29,8 @@ pub struct ShellSettings {
     #[serde(default)]
     pub mic_device_id: Option<String>,
     #[serde(default)]
+    pub capture_system_audio: bool,
+    #[serde(default)]
     pub camera_enabled: bool,
     #[serde(default)]
     pub camera_device_id: Option<String>,
@@ -84,6 +86,7 @@ impl Default for ShellSettings {
             source: None,
             mic_enabled: false,
             mic_device_id: None,
+            capture_system_audio: false,
             camera_enabled: false,
             camera_device_id: None,
             camera_shape: CameraShape::Circle,
@@ -105,9 +108,22 @@ impl ShellSettings {
     /// Clamps persisted fields to legal ranges (matches upstream `ShellSettings.init(from:)`).
     #[must_use]
     pub fn sanitized(mut self) -> Self {
-        self.bubble_roundness = self.bubble_roundness.clamp(0.0, 1.0);
-        self.bubble_size = self.bubble_size.clamp(0.08, 0.50);
-        self.bubble_center = self.bubble_center.clamped();
+        self.bubble_roundness = if self.bubble_roundness.is_finite() {
+            self.bubble_roundness.clamp(0.0, 1.0)
+        } else {
+            default_bubble_roundness()
+        };
+        self.bubble_size = if self.bubble_size.is_finite() {
+            self.bubble_size.clamp(0.08, 0.50)
+        } else {
+            DEFAULT_BUBBLE_SIZE
+        };
+        self.bubble_center = if self.bubble_center.x.is_finite() && self.bubble_center.y.is_finite()
+        {
+            self.bubble_center.clamped()
+        } else {
+            DEFAULT_BUBBLE_CENTER
+        };
         if !COUNTDOWN_CHOICES.contains(&self.countdown_seconds) {
             self.countdown_seconds = DEFAULT_COUNTDOWN_SECONDS;
         }
@@ -170,10 +186,8 @@ impl ShellSettingsStore {
         }
         let json = serde_json::to_vec_pretty(&clean)
             .map_err(|e| format!("Could not serialize settings: {e}"))?;
-        let tmp = self.path.with_extension("json.tmp");
-        std::fs::write(&tmp, &json).map_err(|e| format!("Could not write settings: {e}"))?;
-        std::fs::rename(&tmp, &self.path)
-            .map_err(|e| format!("Could not replace settings file: {e}"))
+        nss_project::atomic_file::write_atomic(&json, &self.path)
+            .map_err(|e| format!("Could not save settings file: {e}"))
     }
 }
 

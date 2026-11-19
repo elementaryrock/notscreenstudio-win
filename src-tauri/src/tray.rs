@@ -3,6 +3,8 @@
 //! Renders three crisp 32x32 RGBA tray icons once at startup and swaps them on state transitions,
 //! with a 1 s elapsed-time tooltip while recording.
 
+use std::sync::atomic::{AtomicU8, Ordering};
+
 use tauri::image::Image as TauriImage;
 use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
@@ -141,6 +143,10 @@ pub fn setup_tray(app: &AppHandle) -> tauri::Result<()> {
         .show_menu_on_left_click(false)
         .on_menu_event(|app, event| match event.id.as_ref() {
             "tray_record" => {
+                if let Some(win) = app.get_webview_window("main") {
+                    let _ = win.show();
+                    let _ = win.set_focus();
+                }
                 let _ = app.emit("nss://tray-action", "record");
             }
             "tray_pause" => {
@@ -187,6 +193,16 @@ pub fn setup_tray(app: &AppHandle) -> tauri::Result<()> {
     Ok(())
 }
 
+static LAST_TRAY_VISUAL: AtomicU8 = AtomicU8::new(0);
+
+fn visual_code(v: TrayVisual) -> u8 {
+    match v {
+        TrayVisual::Idle => 1,
+        TrayVisual::Recording => 2,
+        TrayVisual::Paused => 3,
+    }
+}
+
 /// Updates the tray icon image and tooltip text to reflect the live shell phase and elapsed time.
 pub fn update_tray(app: &AppHandle, phase: &ShellPhase, paused: bool, elapsed_secs: f64) {
     let Some(tray) = app.tray_by_id(TRAY_ID) else {
@@ -214,7 +230,10 @@ pub fn update_tray(app: &AppHandle, phase: &ShellPhase, paused: bool, elapsed_se
         ShellPhase::Saving => (TrayVisual::Idle, "notscreenstudio — Saving...".to_owned()),
         _ => (TrayVisual::Idle, "notscreenstudio — Ready".to_owned()),
     };
-    let _ = tray.set_icon(Some(render_tray_icon(visual)));
+    let code = visual_code(visual);
+    if LAST_TRAY_VISUAL.swap(code, Ordering::AcqRel) != code {
+        let _ = tray.set_icon(Some(render_tray_icon(visual)));
+    }
     let _ = tray.set_tooltip(Some(tooltip));
 }
 

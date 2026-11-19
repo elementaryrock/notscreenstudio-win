@@ -252,6 +252,9 @@ impl CursorTrack {
     #[must_use]
     pub fn raw_position(&self, t: MediaTime) -> Option<NormalizedPoint> {
         let first = self.samples.first()?;
+        if !t.is_finite() {
+            return Some(first.point());
+        }
         let last = self.samples.last()?;
         if t <= first.t {
             return Some(first.point());

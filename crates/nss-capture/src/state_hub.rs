@@ -16,6 +16,7 @@ use nss_core::{NssError, RecordingState};
 pub enum Component {
     Screen,
     Microphone,
+    SystemAudio,
     Camera,
     Writer,
 }

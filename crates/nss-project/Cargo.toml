@@ -17,7 +17,7 @@ thiserror = { workspace = true }
 time = { workspace = true }
 
 [target.'cfg(windows)'.dependencies]
-windows-sys = { workspace = true, features = ["Win32_UI_Shell", "Win32_Foundation"] }
+windows-sys = { workspace = true, features = ["Win32_UI_Shell", "Win32_Foundation", "Win32_System_Com"] }
 
 [dev-dependencies]
 tempfile = { workspace = true }

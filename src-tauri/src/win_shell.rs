@@ -15,13 +15,17 @@ use std::thread::{self, JoinHandle};
 #[cfg(windows)]
 use windows::core::{PCWSTR, PWSTR};
 #[cfg(windows)]
-use windows::Win32::Foundation::{HWND, LPARAM, WPARAM};
+use windows::Win32::Foundation::{HWND, LPARAM, RPC_E_CHANGED_MODE, WPARAM};
 #[cfg(windows)]
 use windows::Win32::System::Com::{
-    CoInitializeEx, CoTaskMemFree, CoUninitialize, COINIT_APARTMENTTHREADED,
+    CoInitializeEx, CoTaskMemFree, CoUninitialize, COINIT_APARTMENTTHREADED, COINIT_DISABLE_OLE1DDE,
 };
 #[cfg(windows)]
 use windows::Win32::System::Threading::GetCurrentThreadId;
+#[cfg(windows)]
+use windows::Win32::UI::HiDpi::{
+    SetProcessDpiAwarenessContext, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2,
+};
 #[cfg(windows)]
 use windows::Win32::UI::Input::KeyboardAndMouse::{
     RegisterHotKey, UnregisterHotKey, HOT_KEY_MODIFIERS, MOD_ALT, MOD_CONTROL, MOD_NOREPEAT,
@@ -34,10 +38,23 @@ use windows::Win32::UI::Shell::{
 };
 #[cfg(windows)]
 use windows::Win32::UI::WindowsAndMessaging::{
-    GetMessageW, GetWindowLongPtrW, PostThreadMessageW, SetWindowDisplayAffinity,
-    SetWindowLongPtrW, GWL_EXSTYLE, MSG, WDA_EXCLUDEFROMCAPTURE, WM_HOTKEY, WM_QUIT,
-    WS_EX_TOOLWINDOW,
+    GetMessageW, GetWindowLongPtrW, PeekMessageW, PostThreadMessageW, SetWindowDisplayAffinity,
+    SetWindowLongPtrW, GWL_EXSTYLE, MSG, PM_NOREMOVE, WDA_EXCLUDEFROMCAPTURE, WM_HOTKEY, WM_QUIT,
+    WS_EX_APPWINDOW, WS_EX_TOOLWINDOW,
 };
+
+/// Ensures the process runs under Per-Monitor DPI Awareness v2 before any monitor enumeration or
+/// window placement occurs, so Win32 monitor bounds always report true physical pixels.
+pub fn enable_per_monitor_dpi_awareness() {
+    #[cfg(windows)]
+    {
+        // SAFETY: process-wide DPI awareness API taking a documented pseudo-handle constant;
+        // fails harmlessly with E_ACCESSDENIED if already configured by manifest/runtime.
+        unsafe {
+            let _ = SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
+        }
+    }
+}
 
 /// Resolves the user's real Windows Videos folder via `SHGetKnownFolderPath(FOLDERID_Videos)`,
 /// properly handling folders redirected into OneDrive or a secondary drive.
@@ -63,29 +80,48 @@ pub fn known_videos_dir() -> Option<PathBuf> {
 pub fn reveal_in_explorer(path: &Path) -> Result<(), String> {
     #[cfg(windows)]
     {
-        let wide: Vec<u16> = path
-            .as_os_str()
-            .to_string_lossy()
-            .encode_utf16()
-            .chain(std::iter::once(0))
-            .collect();
-        // SAFETY: STA COM initialized/uninitialized locally; `ILCreateFromPathW` result freed via `ILFree`.
-        unsafe {
-            let hr = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
-            let should_uninit = hr.is_ok();
-            let pidl = ILCreateFromPathW(PCWSTR(wide.as_ptr()));
-            let result = if !pidl.is_null() {
-                let res = SHOpenFolderAndSelectItems(pidl, None, 0);
-                ILFree(Some(pidl));
-                res.map_err(|e| format!("Failed to open Explorer: {e}"))
-            } else {
-                Err(format!("Path does not exist: {}", path.display()))
-            };
-            if should_uninit {
-                CoUninitialize();
+        let normalized = path.to_string_lossy().replace('/', "\\");
+        let cleaned = normalized
+            .strip_prefix(r"\\?\UNC\")
+            .map(|u| format!(r"\\{u}"))
+            .or_else(|| normalized.strip_prefix(r"\\?\").map(str::to_owned))
+            .unwrap_or(normalized);
+        let wide: Vec<u16> = cleaned.encode_utf16().chain(std::iter::once(0)).collect();
+        let display = path.display().to_string();
+
+        let run_sta = move || -> Result<(), String> {
+            // SAFETY: STA COM initialized/uninitialized locally; `ILCreateFromPathW` freed via `ILFree`.
+            unsafe {
+                let hr = CoInitializeEx(None, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE);
+                let should_uninit = hr.is_ok();
+                let pidl = ILCreateFromPathW(PCWSTR(wide.as_ptr()));
+                let result = if !pidl.is_null() {
+                    let res = SHOpenFolderAndSelectItems(pidl, None, 0);
+                    ILFree(Some(pidl));
+                    res.map_err(|e| format!("Failed to open Explorer: {e}"))
+                } else {
+                    Err(format!("Path does not exist: {display}"))
+                };
+                if should_uninit {
+                    CoUninitialize();
+                }
+                result
             }
-            result
+        };
+
+        // SAFETY: probe COM apartment mode; hop to a dedicated STA thread if current thread is MTA.
+        let probe =
+            unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE) };
+        if probe == RPC_E_CHANGED_MODE {
+            return thread::spawn(run_sta)
+                .join()
+                .unwrap_or_else(|_| Err("Explorer helper panicked.".into()));
         }
+        if probe.is_ok() {
+            // SAFETY: balanced with `probe` above.
+            unsafe { CoUninitialize() };
+        }
+        run_sta()
     }
     #[cfg(not(windows))]
     {
@@ -115,7 +151,8 @@ pub fn exclude_window_from_capture(hwnd: u64) -> Result<(), String> {
     }
 }
 
-/// Marks a HUD overlay window with `WS_EX_TOOLWINDOW` so it stays out of Alt+Tab and the taskbar.
+/// Marks a HUD overlay window with `WS_EX_TOOLWINDOW` (and clears `WS_EX_APPWINDOW`) so it stays
+/// out of Alt+Tab and the taskbar.
 pub fn mark_tool_window(hwnd: u64) {
     #[cfg(windows)]
     {
@@ -123,10 +160,11 @@ pub fn mark_tool_window(hwnd: u64) {
             return;
         }
         let handle = HWND(hwnd as usize as *mut std::ffi::c_void);
-        // SAFETY: standard extended window style bit-OR on an owned HWND.
+        // SAFETY: standard extended window style bit manipulation on an owned HWND.
         unsafe {
             let current = GetWindowLongPtrW(handle, GWL_EXSTYLE);
-            let _ = SetWindowLongPtrW(handle, GWL_EXSTYLE, current | (WS_EX_TOOLWINDOW.0 as isize));
+            let next = (current | (WS_EX_TOOLWINDOW.0 as isize)) & !(WS_EX_APPWINDOW.0 as isize);
+            let _ = SetWindowLongPtrW(handle, GWL_EXSTYLE, next);
         }
     }
     #[cfg(not(windows))]
@@ -261,6 +299,10 @@ impl GlobalHotKeyManager {
                                     ));
                                 }
                             }
+                        } else if !record_label.trim().is_empty() {
+                            status.record_conflict = Some(format!(
+                                "Invalid shortcut \"{record_label}\". Include Ctrl, Alt, or Win plus a key."
+                            ));
                         }
                         if let Some(ch) = pause_chord {
                             match RegisterHotKey(None, ID_PAUSE, ch.win32_modifiers(), ch.vk) {
@@ -271,11 +313,18 @@ impl GlobalHotKeyManager {
                                     ));
                                 }
                             }
+                        } else if !pause_label.trim().is_empty() {
+                            status.pause_conflict = Some(format!(
+                                "Invalid shortcut \"{pause_label}\". Include Ctrl, Alt, or Win plus a key."
+                            ));
                         }
+                        // Ensure the Win32 message queue exists before publishing `tid` so an
+                        // immediate `PostThreadMessageW(WM_QUIT)` on stop/restart is never lost.
+                        let mut msg = MSG::default();
+                        let _ = PeekMessageW(&mut msg, None, 0, 0, PM_NOREMOVE);
                         let _ = tx.send((tid, status.clone()));
 
-                        let mut msg = MSG::default();
-                        while GetMessageW(&mut msg, None, 0, 0).as_bool() {
+                        while GetMessageW(&mut msg, None, 0, 0).0 > 0 {
                             if msg.message == WM_HOTKEY {
                                 match msg.wParam.0 as i32 {
                                     ID_RECORD => on_action(HotKeyAction::ToggleRecord),

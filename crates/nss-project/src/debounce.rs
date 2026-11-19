@@ -189,6 +189,7 @@ impl DebounceClock for ManualClock {
 }
 
 struct Pending {
+    reference: ProjectReference,
     project: Project,
     deadline: f64,
 }
@@ -212,17 +213,16 @@ struct Shared {
 }
 
 impl Shared {
-    fn write(&self, key: &Path, pending: &Pending) {
-        let reference = ProjectReference::new(key);
-        if let Err(e) = (self.writer)(&pending.project, &reference) {
+    fn write(&self, pending: &Pending) {
+        if let Err(e) = (self.writer)(&pending.project, &pending.reference) {
             if let Some(handler) = &self.on_error {
-                handler(&e, &reference);
+                handler(&e, &pending.reference);
             }
         }
     }
 
     /// Removes and returns every pending entry whose deadline has passed.
-    fn take_due(&self, now: f64) -> Vec<(PathBuf, Pending)> {
+    fn take_due(&self, now: f64) -> Vec<Pending> {
         let mut state = self.state.lock();
         let due: Vec<PathBuf> = state
             .pending
@@ -231,7 +231,7 @@ impl Shared {
             .map(|(k, _)| k.clone())
             .collect();
         due.into_iter()
-            .filter_map(|k| state.pending.remove(&k).map(|p| (k, p)))
+            .filter_map(|k| state.pending.remove(&k))
             .collect()
     }
 
@@ -256,15 +256,20 @@ impl Shared {
             if self.shutdown.load(Ordering::Acquire) {
                 return;
             }
-            // A newer schedule may have pushed the deadline out while we slept.
+            // A newer schedule may have pushed the deadline out while we slept. Hold `write_lock`
+            // across `take_due` + `write` (matching `exclusive()`/`flush()` lock order) so an
+            // explicit save can never run between popping an old pending entry and writing it.
             loop {
+                let _writing = self.write_lock.lock();
+                if self.shutdown.load(Ordering::Acquire) {
+                    return;
+                }
                 let due = self.take_due(self.clock.now());
                 if due.is_empty() {
                     break;
                 }
-                let _writing = self.write_lock.lock();
-                for (key, pending) in due {
-                    self.write(&key, &pending);
+                for pending in due {
+                    self.write(&pending);
                 }
             }
         }
@@ -287,7 +292,12 @@ impl std::fmt::Debug for AutosaveDebouncer {
 
 impl Drop for AutosaveDebouncer {
     fn drop(&mut self) {
-        self.shared.shutdown.store(true, Ordering::Release);
+        // Hold `state` while publishing `shutdown` so the worker cannot miss the wakeup between
+        // reading `shutdown == false` and parking in `self.wake.wait(&mut state)`.
+        {
+            let _state = self.shared.state.lock();
+            self.shared.shutdown.store(true, Ordering::Release);
+        }
         self.shared.wake.notify_all();
         self.shared.clock.notify();
         if let Some(worker) = self.worker.take() {
@@ -333,11 +343,14 @@ impl AutosaveDebouncer {
     pub fn schedule(&self, project: Project, reference: &ProjectReference) {
         let key = path_key(&reference.url);
         let deadline = self.shared.clock.now() + self.shared.delay;
-        self.shared
-            .state
-            .lock()
-            .pending
-            .insert(key, Pending { project, deadline });
+        self.shared.state.lock().pending.insert(
+            key,
+            Pending {
+                reference: reference.clone(),
+                project,
+                deadline,
+            },
+        );
         // Wake the worker so an earlier deadline (or an empty queue it is blocked on) is seen.
         self.shared.wake.notify_all();
         self.shared.clock.notify();
@@ -384,10 +397,10 @@ impl AutosaveDebouncer {
         let taken = {
             let _writing = self.shared.write_lock.lock();
             let mut state = self.shared.state.lock();
-            let all: Vec<(PathBuf, Pending)> = state.pending.drain().collect();
+            let all: Vec<Pending> = state.pending.drain().map(|(_, p)| p).collect();
             drop(state);
-            for (key, pending) in &all {
-                self.shared.write(key, pending);
+            for pending in &all {
+                self.shared.write(pending);
             }
             all.len()
         };
@@ -399,14 +412,14 @@ impl AutosaveDebouncer {
 
 /// Identity of a bundle for the debounce map.
 ///
-/// Windows paths are case-insensitive, so two spellings of the same bundle must not be two timers.
-/// `fs::canonicalize` would also fold `.`/`..`, but it fails for a bundle that does not exist yet
-/// and returns verbatim (`\\?\`) paths on Windows, which would then not match a plain path; a
-/// lower-cased spelling is predictable and enough.
-fn path_key(path: &Path) -> PathBuf {
+/// Windows paths are case-insensitive and accept both `/` and `\`, so two spellings of the same
+/// bundle must not be two timers. `fs::canonicalize` would also fold `.`/`..`, but it fails for a
+/// bundle that does not exist yet and returns verbatim (`\\?\`) paths on Windows, which would then
+/// not match a plain path; a normalized, lower-cased spelling is predictable and enough.
+pub(crate) fn path_key(path: &Path) -> PathBuf {
     let text = path.to_string_lossy();
     if cfg!(windows) {
-        PathBuf::from(text.to_lowercase())
+        PathBuf::from(text.replace('\\', "/").to_lowercase())
     } else {
         PathBuf::from(text.into_owned())
     }

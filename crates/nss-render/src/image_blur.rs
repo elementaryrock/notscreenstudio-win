@@ -25,14 +25,17 @@ pub fn plan(sigma: f64, mip_levels: u32) -> (u32, f64) {
         return (0, sigma.max(0.0));
     }
     let level = (sigma / MAX_WORKING_SIGMA).log2().ceil().max(0.0) as u32;
-    let level = level.min(mip_levels.saturating_sub(1));
+    let level = level.min(mip_levels.saturating_sub(1)).min(31);
     (level, sigma / f64::from(1u32 << level))
 }
 
 /// Taps each side for a sigma in working-level texels (upstream: `ceil(3 * sigma)`, at least 1).
 #[must_use]
 pub fn radius_for(sigma: f64) -> u32 {
-    ((3.0 * sigma).round() as i64).max(1) as u32
+    if !sigma.is_finite() || sigma <= 0.0 {
+        return 1;
+    }
+    (3.0 * sigma).ceil().clamp(1.0, 256.0) as u32
 }
 
 /// The amount to blur for a style, in image pixels of an image whose shorter side is `short_side`.
@@ -66,28 +69,39 @@ pub fn blur_linear_rgba(
     sigma: f64,
     radius: u32,
 ) -> Vec<f32> {
-    if width == 0 || height == 0 || sigma <= 0.0 {
+    if width == 0 || height == 0 || !sigma.is_finite() || sigma <= 0.0 {
+        return pixels.to_vec();
+    }
+    let Some(expected) = (width as usize)
+        .checked_mul(height as usize)
+        .and_then(|n| n.checked_mul(4))
+    else {
+        return pixels.to_vec();
+    };
+    if pixels.len() < expected {
         return pixels.to_vec();
     }
     let k = -0.5 / (sigma * sigma);
-    let r = radius as i64;
+    let r = radius.min(256) as i64;
+    let w_usize = width as usize;
     let tap = |i: i64| (((i * i) as f64) * k).exp();
     let mut tmp = vec![0.0_f32; pixels.len()];
     // Horizontal.
     for y in 0..height as i64 {
+        let row_base = (y as usize) * w_usize;
         for x in 0..width as i64 {
             let mut acc = [0.0_f64; 4];
             let mut wsum = 0.0;
             for d in -r..=r {
-                let sx = (x + d).clamp(0, width as i64 - 1) as u32;
+                let sx = (x + d).clamp(0, width as i64 - 1) as usize;
                 let w = tap(d);
-                let i = ((y as u32 * width + sx) * 4) as usize;
+                let i = (row_base + sx) * 4;
                 for c in 0..4 {
                     acc[c] += f64::from(pixels[i + c]) * w;
                 }
                 wsum += w;
             }
-            let o = ((y as u32 * width + x as u32) * 4) as usize;
+            let o = (row_base + x as usize) * 4;
             for c in 0..4 {
                 tmp[o + c] = (acc[c] / wsum) as f32;
             }
@@ -96,19 +110,20 @@ pub fn blur_linear_rgba(
     // Vertical.
     let mut out = vec![0.0_f32; pixels.len()];
     for y in 0..height as i64 {
+        let row_base = (y as usize) * w_usize;
         for x in 0..width as i64 {
             let mut acc = [0.0_f64; 4];
             let mut wsum = 0.0;
             for d in -r..=r {
-                let sy = (y + d).clamp(0, height as i64 - 1) as u32;
+                let sy = (y + d).clamp(0, height as i64 - 1) as usize;
                 let w = tap(d);
-                let i = ((sy * width + x as u32) * 4) as usize;
+                let i = (sy * w_usize + x as usize) * 4;
                 for c in 0..4 {
                     acc[c] += f64::from(tmp[i + c]) * w;
                 }
                 wsum += w;
             }
-            let o = ((y as u32 * width + x as u32) * 4) as usize;
+            let o = (row_base + x as usize) * 4;
             for c in 0..4 {
                 out[o + c] = (acc[c] / wsum) as f32;
             }

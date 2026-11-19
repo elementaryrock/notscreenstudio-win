@@ -19,7 +19,7 @@ use crate::capture_filter::{plan as plan_for, FilterPlan, Target};
 use crate::capture_math::{
     clamped_area, host_now, pixel_size, video_bitrate, CaptureFilePlan, SharedOrigin, FRAME_RATE,
 };
-use crate::device::{CameraRecorder, MicRecorder};
+use crate::device::{CameraRecorder, MicRecorder, SystemAudioRecorder};
 use crate::frame_gate::FrameGate;
 use crate::pause_clock::{PauseClock, PauseTimeline, PausedFrameHold};
 use crate::permissions::CapturePermissions;
@@ -337,6 +337,7 @@ pub struct ScreenCaptureRecordingSession {
 
     screen: Option<ActiveScreen>,
     mic: Option<MicRecorder>,
+    system_audio: Option<SystemAudioRecorder>,
     camera: Option<CameraRecorder>,
     origin: Arc<SharedOrigin>,
     pause: Arc<PauseClock>,
@@ -364,6 +365,7 @@ impl ScreenCaptureRecordingSession {
             own_windows,
             screen: None,
             mic: None,
+            system_audio: None,
             camera: None,
             origin: Arc::new(SharedOrigin::new()),
             pause: Arc::new(PauseClock::new()),
@@ -457,9 +459,6 @@ impl ScreenCaptureRecordingSession {
         files: CaptureFilePlan,
         armed: bool,
     ) -> Result<(), NssError> {
-        // Request borderless once per process (ADR 0007); silently degrades to the yellow border.
-        let _ = CapturePermissions::request_borderless_once();
-
         let enum_monitors = crate::win::enumerate::enumerate_monitors();
         let monitors: Vec<crate::win::Monitor> =
             enum_monitors.iter().map(|m| m.monitor.clone()).collect();
@@ -552,6 +551,27 @@ impl ScreenCaptureRecordingSession {
                 move |err| events.send(CaptureEvent::device(Component::Microphone, err)),
             )?;
             self.mic = Some(recorder);
+        }
+
+        if let Some(sys_name) = files.system_audio.clone() {
+            let path = files.path(&sys_name, bundle);
+            let events = Arc::clone(&self.events);
+            match SystemAudioRecorder::start(
+                path.clone(),
+                Arc::clone(&self.origin),
+                Arc::clone(&self.pause),
+                move |err| events.send(CaptureEvent::device(Component::SystemAudio, err)),
+            ) {
+                Ok(recorder) => {
+                    self.created_files.push(path);
+                    self.system_audio = Some(recorder);
+                }
+                Err(err) => {
+                    // Best-effort: headless/no-speaker machines can still record screen cleanly.
+                    self.events
+                        .send(CaptureEvent::device(Component::SystemAudio, err));
+                }
+            }
         }
 
         if let (Some(cam_id), Some(cam_name)) =
@@ -730,6 +750,9 @@ impl ScreenCaptureRecordingSession {
         if let Some(mut m) = self.mic.take() {
             let _ = m.stop();
         }
+        if let Some(mut s) = self.system_audio.take() {
+            let _ = s.stop();
+        }
         if let Some(mut c) = self.camera.take() {
             let _ = c.stop();
         }
@@ -768,6 +791,7 @@ impl RecordingSession for ScreenCaptureRecordingSession {
             return Err(NssError::Unsupported("No recording is in progress.".into()));
         };
         let mic = self.mic.take();
+        let system_audio = self.system_audio.take();
         let camera = self.camera.take();
         let created = std::mem::take(&mut self.created_files);
         let bundle_dir = self.bundle_dir.take();
@@ -777,6 +801,9 @@ impl RecordingSession for ScreenCaptureRecordingSession {
 
         let screen_res = screen.stop(stop_host);
         let mic_has = mic.and_then(|mut m| m.stop().ok()).unwrap_or(false);
+        let sys_has = system_audio
+            .and_then(|mut s| s.stop().ok())
+            .unwrap_or(false);
         let cam_has = camera.and_then(|mut c| c.stop().ok()).unwrap_or(false);
 
         let (frames, end_host) = match screen_res {
@@ -822,6 +849,11 @@ impl RecordingSession for ScreenCaptureRecordingSession {
         if let Some(ref dir) = bundle_dir {
             if !mic_has {
                 if let Some(ref name) = files.mic {
+                    let _ = std::fs::remove_file(files.path(name, dir));
+                }
+            }
+            if !sys_has {
+                if let Some(ref name) = files.system_audio {
                     let _ = std::fs::remove_file(files.path(name, dir));
                 }
             }
@@ -918,12 +950,18 @@ impl WarmableRecordingSession for ScreenCaptureRecordingSession {
                 w.set_paused(true);
             }
         }
+        if let Some(ref cam) = self.camera {
+            cam.set_paused(true);
+        }
         Ok(())
     }
 
     fn resume(&mut self) -> Result<(), NssError> {
         if !matches!(self.hub.current(), RecordingState::Recording { .. }) {
             return Err(NssError::Unsupported("No recording is in progress.".into()));
+        }
+        if let Some(ref cam) = self.camera {
+            cam.set_paused(false);
         }
         if let Some(ref screen) = self.screen {
             if let Some(ref w) = *screen.writer.lock() {
@@ -1097,5 +1135,59 @@ mod tests {
         assert!(assets.duration > 0.4, "duration={}", assets.duration);
         assert!(assets.start_host_time > 0.0);
         assert!(dir.path().join(&assets.screen_file).is_file());
+    }
+
+    #[test]
+    #[ignore = "device: captures every connected monitor (including secondary / multi-GPU) via warm prepare + begin_recording"]
+    fn live_records_all_connected_displays() {
+        let list = crate::catalog::CaptureSourceCatalog::load();
+        assert!(!list.displays.is_empty(), "at least one display connected");
+        for disp in &list.displays {
+            println!(
+                "Display id={} name={:?} main={} frame={:?} pixel_size={}x{} scale={}",
+                disp.id,
+                disp.name,
+                disp.is_main,
+                disp.frame,
+                disp.pixel_size.width,
+                disp.pixel_size.height,
+                disp.scale
+            );
+            let dir = tempfile::tempdir().unwrap();
+            let mut session = ScreenCaptureRecordingSession::default();
+            session
+                .prepare(RecordingOptions::new(disp.source()), dir.path())
+                .unwrap_or_else(|e| panic!("prepare failed for display {}: {e}", disp.name));
+            std::thread::sleep(Duration::from_millis(800));
+            session.begin_recording().unwrap_or_else(|e| {
+                panic!("begin_recording failed for display {}: {e}", disp.name)
+            });
+            std::thread::sleep(Duration::from_millis(1200));
+            let assets = session
+                .stop()
+                .unwrap_or_else(|e| panic!("stop failed for display {}: {e}", disp.name));
+            let mov = dir.path().join(&assets.screen_file);
+            let bytes = std::fs::metadata(&mov).map(|m| m.len()).unwrap_or(0);
+            println!(
+                "  -> recorded {}x{} duration={:.2}s file={} ({} bytes)",
+                assets.source_pixel_size.width,
+                assets.source_pixel_size.height,
+                assets.duration,
+                assets.screen_file,
+                bytes
+            );
+            assert!(
+                assets.duration > 0.4,
+                "display {} short duration={}",
+                disp.name,
+                assets.duration
+            );
+            assert!(
+                bytes > 4096,
+                "display {} produced tiny screen.mov ({} bytes)",
+                disp.name,
+                bytes
+            );
+        }
     }
 }

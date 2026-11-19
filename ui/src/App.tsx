@@ -1,5 +1,6 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
+  cancelCountdown,
   coreInfo,
   dismissError,
   getSettings,
@@ -8,6 +9,7 @@ import {
   onElapsed,
   onHotkey,
   onRecordingSaved,
+  onSettingsChanged,
   onShellState,
   onTrayAction,
   pauseRecording,
@@ -37,14 +39,24 @@ function MainApp(): React.JSX.Element {
   const [showSetup, setShowSetup] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
 
+  const shellRef = useRef<ShellSnapshot | null>(null);
+  shellRef.current = shell;
+
   useEffect(() => {
-    void Promise.all([coreInfo(), getShellSnapshot(), getSettings()]).then(
-      ([info, snap, set]) => {
+    let active = true;
+    void Promise.all([coreInfo(), getShellSnapshot(), getSettings()])
+      .then(([info, snap, set]) => {
+        if (!active) return;
         setCore(info);
         setShell(snap);
         setSettings(set);
-      },
-    );
+      })
+      .catch(() => {
+        // Initial load errors surface via subsequent calls or shell snapshot.
+      });
+    return () => {
+      active = false;
+    };
   }, []);
 
   const handleStopRecording = useCallback(async () => {
@@ -57,51 +69,85 @@ function MainApp(): React.JSX.Element {
   }, []);
 
   const handlePauseToggle = useCallback(async () => {
-    if (!shell || shell.phase.kind !== "recording") return;
-    if (shell.paused) await resumeRecording();
-    else await pauseRecording();
-  }, [shell]);
+    const curr = shellRef.current;
+    if (!curr || curr.phase.kind !== "recording") return;
+    try {
+      if (curr.paused) await resumeRecording();
+      else await pauseRecording();
+    } catch {
+      // Error surfaced via shell-state event.
+    }
+  }, []);
 
-  // Subscribe to backend shell, tray, hotkey, elapsed, and saved-project events.
+  // Subscribe once to backend shell, tray, hotkey, elapsed, settings, and saved-project events.
+  // Guard every async `listen` registration against React StrictMode unmount races.
   useEffect(() => {
+    let disposed = false;
     const cleanups: Array<() => void> = [];
-    void onShellState((s) => setShell(s)).then((fn) => cleanups.push(fn));
-    void onElapsed((secs) =>
-      setShell((prev) => (prev ? { ...prev, elapsedSeconds: secs } : prev)),
-    ).then((fn) => cleanups.push(fn));
-    void onRecordingSaved((ref) => {
-      setShowSetup(false);
-      setActiveProject(ref);
-    }).then((fn) => cleanups.push(fn));
-    void onAreaSelected((src) => {
-      if (src) {
-        setSettings((prev) => (prev ? { ...prev, source: src } : prev));
-        setShowSetup(true);
-      }
-    }).then((fn) => cleanups.push(fn));
-    void onTrayAction((action) => {
-      if (action === "record") setShowSetup(true);
-      else if (action === "settings") setShowSettings(true);
-      else if (action === "stop") void handleStopRecording();
-      else if (action === "pause") void handlePauseToggle();
-      else if (action === "open") setActiveProject(null);
-    }).then((fn) => cleanups.push(fn));
-    void onHotkey((action) => {
-      if (action === "toggle-record") {
-        setShell((curr) => {
-          if (curr?.phase.kind === "recording") {
+    const register = (promise: Promise<() => void>): void => {
+      void promise
+        .then((fn) => {
+          if (disposed) fn();
+          else cleanups.push(fn);
+        })
+        .catch(() => {
+          // Ignore listener registration failure outside Tauri context.
+        });
+    };
+
+    register(onShellState((s) => setShell(s)));
+    register(
+      onElapsed((secs) =>
+        setShell((prev) => (prev ? { ...prev, elapsedSeconds: secs } : prev)),
+      ),
+    );
+    register(
+      onSettingsChanged((next) => {
+        setSettings(next);
+      }),
+    );
+    register(
+      onRecordingSaved((ref) => {
+        setShowSetup(false);
+        setActiveProject(ref);
+      }),
+    );
+    register(
+      onAreaSelected((src) => {
+        if (src) {
+          setSettings((prev) => (prev ? { ...prev, source: src } : prev));
+          setShowSetup(true);
+        }
+      }),
+    );
+    register(
+      onTrayAction((action) => {
+        if (action === "record") setShowSetup(true);
+        else if (action === "settings") setShowSettings(true);
+        else if (action === "stop") void handleStopRecording();
+        else if (action === "pause") void handlePauseToggle();
+        else if (action === "open") setActiveProject(null);
+      }),
+    );
+    register(
+      onHotkey((action) => {
+        if (action === "toggle-record") {
+          const phase = shellRef.current?.phase.kind;
+          if (phase === "recording") {
             void handleStopRecording();
-          } else {
+          } else if (phase === "preparing") {
+            void cancelCountdown().catch(() => { });
+          } else if (phase !== "saving") {
             setShowSetup(true);
           }
-          return curr;
-        });
-      } else if (action === "toggle-pause") {
-        void handlePauseToggle();
-      }
-    }).then((fn) => cleanups.push(fn));
+        } else if (action === "toggle-pause") {
+          void handlePauseToggle();
+        }
+      }),
+    );
 
     return () => {
+      disposed = true;
       for (const fn of cleanups) fn();
     };
   }, [handleStopRecording, handlePauseToggle]);
@@ -124,7 +170,7 @@ function MainApp(): React.JSX.Element {
           onOpenSettings={() => setShowSettings(true)}
           onStopRecording={() => void handleStopRecording()}
           onPauseToggle={() => void handlePauseToggle()}
-          onDismissError={() => void dismissError()}
+          onDismissError={() => void dismissError().catch(() => { })}
         />
       )}
 

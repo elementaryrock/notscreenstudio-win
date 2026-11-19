@@ -57,7 +57,7 @@ impl RippleState {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(default)]
+#[serde(default, rename_all = "camelCase")]
 pub struct CursorState {
     /// Smoothed position, normalized source space.
     pub position: NormalizedPoint,

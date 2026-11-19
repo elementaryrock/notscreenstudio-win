@@ -27,37 +27,62 @@ impl Trash for RecycleBinTrash {
 mod platform {
     use super::{Path, ProjectError};
     use std::os::windows::ffi::OsStrExt;
+    use std::path::PathBuf;
+    use windows_sys::Win32::Foundation::{RPC_E_CHANGED_MODE, S_FALSE, S_OK};
+    use windows_sys::Win32::System::Com::{
+        CoInitializeEx, CoUninitialize, COINIT_APARTMENTTHREADED, COINIT_DISABLE_OLE1DDE,
+    };
     use windows_sys::Win32::UI::Shell::{
         SHFileOperationW, FOF_ALLOWUNDO, FOF_NOCONFIRMATION, FOF_NOERRORUI, FOF_SILENT, FO_DELETE,
         SHFILEOPSTRUCTW,
     };
 
-    /// A NUL-separated, double-NUL-terminated wide string, as `SHFileOperationW` requires.
-    fn wide_list(path: &Path) -> Vec<u16> {
+    /// Normalizes `path` for `SHFileOperationW`: absolute, no verbatim `\\?\` prefix, backslashes
+    /// only, no embedded NULs, and never a bare drive root.
+    fn wide_list(path: &Path) -> Result<Vec<u16>, ProjectError> {
+        let abs: PathBuf = if path.is_relative() {
+            std::env::current_dir()
+                .map_err(|e| ProjectError::io(path, e))?
+                .join(path)
+        } else {
+            path.to_path_buf()
+        };
+        let raw = abs.to_string_lossy().replace('/', "\\");
+        if raw.contains('\0') {
+            return Err(ProjectError::Delete(
+                "Refusing to delete a path containing a NUL character".to_owned(),
+            ));
+        }
+        // `SHFileOperationW` rejects `\\?\` extended-length prefixes.
+        let cleaned = if let Some(unc) = raw.strip_prefix(r"\\?\UNC\") {
+            format!(r"\\{unc}")
+        } else if let Some(rest) = raw.strip_prefix(r"\\?\") {
+            rest.to_owned()
+        } else {
+            raw
+        };
         // A trailing separator makes the shell report the folder itself inconsistently; the
         // operation wants the item path.
-        let text = path.to_string_lossy();
-        let trimmed = text.trim_end_matches(['\\', '/']).to_owned();
-        let item = if trimmed.is_empty() {
-            text.as_ref()
-        } else {
-            trimmed.as_str()
-        };
-        let mut wide: Vec<u16> = std::ffi::OsStr::new(item).encode_wide().collect();
-        wide.push(0);
-        wide.push(0);
-        wide
-    }
-
-    #[allow(unsafe_code)]
-    pub fn move_to_recycle_bin(path: &Path) -> Result<(), ProjectError> {
-        if !path.exists() {
+        let trimmed = cleaned.trim_end_matches('\\');
+        // Never allow deleting an empty string, a bare drive root (`C:`), or a UNC root.
+        let bytes = trimmed.as_bytes();
+        if trimmed.is_empty()
+            || (bytes.len() == 2 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':')
+            || trimmed.starts_with(r"\\") && trimmed[2..].matches('\\').count() < 2
+        {
             return Err(ProjectError::Delete(format!(
-                "{} is already gone",
+                "Refusing to move root path {} to the Recycle Bin",
                 path.display()
             )));
         }
-        let mut from = wide_list(path);
+        let mut wide: Vec<u16> = std::ffi::OsStr::new(trimmed).encode_wide().collect();
+        wide.push(0);
+        wide.push(0);
+        Ok(wide)
+    }
+
+    #[allow(unsafe_code)]
+    fn run_sh_file_op(mut from: Vec<u16>, display: &str) -> Result<(), ProjectError> {
         let mut operation = SHFILEOPSTRUCTW {
             hwnd: std::ptr::null_mut(),
             wFunc: FO_DELETE,
@@ -74,17 +99,66 @@ mod platform {
         let code: i32 = unsafe { SHFileOperationW(&mut operation) };
         if code != 0 {
             return Err(ProjectError::Delete(format!(
-                "Couldn't move {} to the Recycle Bin (0x{code:04X})",
-                path.display()
+                "Couldn't move {display} to the Recycle Bin (0x{code:04X})"
             )));
         }
         if operation.fAnyOperationsAborted != 0 {
             return Err(ProjectError::Delete(format!(
-                "Moving {} to the Recycle Bin was cancelled",
-                path.display()
+                "Moving {display} to the Recycle Bin was cancelled"
             )));
         }
         Ok(())
+    }
+
+    #[allow(unsafe_code)]
+    pub fn move_to_recycle_bin(path: &Path) -> Result<(), ProjectError> {
+        if !path.exists() {
+            return Err(ProjectError::Delete(format!(
+                "{} is already gone",
+                path.display()
+            )));
+        }
+        let from = wide_list(path)?;
+        let display = path.display().to_string();
+
+        // `SHFileOperationW` requires STA COM initialisation. If this thread is already in MTA
+        // (e.g. a background worker pool), hop to a short-lived STA helper thread.
+        // SAFETY: `CoInitializeEx` with null reserved pointer and standard STA flags is valid.
+        let hr = unsafe {
+            CoInitializeEx(
+                std::ptr::null(),
+                (COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE) as u32,
+            )
+        };
+        if hr == RPC_E_CHANGED_MODE {
+            return std::thread::spawn(move || {
+                // SAFETY: fresh thread, pair CoInitializeEx with CoUninitialize on S_OK/S_FALSE.
+                let inner_hr = unsafe {
+                    CoInitializeEx(
+                        std::ptr::null(),
+                        (COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE) as u32,
+                    )
+                };
+                let res = run_sh_file_op(from, &display);
+                if inner_hr == S_OK || inner_hr == S_FALSE {
+                    // SAFETY: balances the matching CoInitializeEx on this thread.
+                    unsafe { CoUninitialize() };
+                }
+                res
+            })
+            .join()
+            .unwrap_or_else(|_| {
+                Err(ProjectError::Delete(
+                    "Recycle Bin helper panicked".to_owned(),
+                ))
+            });
+        }
+        let res = run_sh_file_op(from, &display);
+        if hr == S_OK || hr == S_FALSE {
+            // SAFETY: balances the matching CoInitializeEx on this thread.
+            unsafe { CoUninitialize() };
+        }
+        res
     }
 }
 

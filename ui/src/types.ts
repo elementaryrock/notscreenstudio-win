@@ -253,6 +253,7 @@ export interface ShellSettings {
   source: CaptureSource | null;
   micEnabled: boolean;
   micDeviceId: string | null;
+  captureSystemAudio: boolean;
   cameraEnabled: boolean;
   cameraDeviceId: string | null;
   cameraShape: CameraShape;
@@ -292,6 +293,18 @@ export interface EditorOpenDto {
   track: CursorTrack;
   duration: number;
   rendererName: string;
+}
+
+export interface PreviewLayoutDto {
+  width: number;
+  height: number;
+  contentX: number;
+  contentY: number;
+  contentWidth: number;
+  contentHeight: number;
+  cameraScale: number;
+  cameraCenterX: number;
+  cameraCenterY: number;
 }
 
 export interface PresetEntry {

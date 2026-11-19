@@ -125,6 +125,9 @@ impl RGBAColor {
     #[must_use]
     pub fn from_hex(s: &str) -> Option<Self> {
         let s = s.strip_prefix('#').unwrap_or(s);
+        if !s.is_ascii() {
+            return None;
+        }
         let byte = |i: usize| u8::from_str_radix(&s[i..i + 2], 16).ok();
         let f = |v: u8| f64::from(v) / 255.0;
         match s.len() {
@@ -325,10 +328,19 @@ impl Timestamp {
     #[must_use]
     pub fn to_system_time(self) -> SystemTime {
         let unix = self.0 + REFERENCE_DATE_UNIX_OFFSET;
+        if !unix.is_finite() {
+            return UNIX_EPOCH;
+        }
         if unix >= 0.0 {
-            UNIX_EPOCH + Duration::from_secs_f64(unix)
+            Duration::try_from_secs_f64(unix)
+                .ok()
+                .and_then(|d| UNIX_EPOCH.checked_add(d))
+                .unwrap_or(UNIX_EPOCH)
         } else {
-            UNIX_EPOCH - Duration::from_secs_f64(-unix)
+            Duration::try_from_secs_f64(-unix)
+                .ok()
+                .and_then(|d| UNIX_EPOCH.checked_sub(d))
+                .unwrap_or(UNIX_EPOCH)
         }
     }
 

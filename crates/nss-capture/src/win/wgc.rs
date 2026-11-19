@@ -14,7 +14,7 @@
 #![allow(unsafe_code)]
 
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{mpsc, Arc};
+use std::sync::{mpsc, Arc, OnceLock};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
@@ -27,14 +27,19 @@ use windows::Graphics::DirectX::Direct3D11::IDirect3DDevice;
 use windows::Graphics::DirectX::DirectXPixelFormat;
 use windows::Graphics::SizeInt32;
 use windows::Win32::Foundation::{HMODULE, HWND, RPC_E_CHANGED_MODE};
-use windows::Win32::Graphics::Direct3D::{D3D_DRIVER_TYPE_HARDWARE, D3D_DRIVER_TYPE_WARP};
-use windows::Win32::Graphics::Direct3D11::{
-    D3D11CreateDevice, ID3D11Device, ID3D11DeviceContext, ID3D11Texture2D, D3D11_CPU_ACCESS_READ,
-    D3D11_CREATE_DEVICE_BGRA_SUPPORT, D3D11_MAPPED_SUBRESOURCE, D3D11_MAP_READ, D3D11_SDK_VERSION,
-    D3D11_TEXTURE2D_DESC, D3D11_USAGE_STAGING,
+use windows::Win32::Graphics::Direct3D::{
+    D3D_DRIVER_TYPE_HARDWARE, D3D_DRIVER_TYPE_UNKNOWN, D3D_DRIVER_TYPE_WARP,
 };
-use windows::Win32::Graphics::Dxgi::IDXGIDevice;
-use windows::Win32::Graphics::Gdi::HMONITOR;
+use windows::Win32::Graphics::Direct3D11::{
+    D3D11CreateDevice, ID3D11Device, ID3D11DeviceContext, ID3D11Multithread, ID3D11Texture2D,
+    D3D11_CPU_ACCESS_READ, D3D11_CREATE_DEVICE_BGRA_SUPPORT, D3D11_MAPPED_SUBRESOURCE,
+    D3D11_MAP_READ, D3D11_SDK_VERSION, D3D11_TEXTURE2D_DESC, D3D11_USAGE_STAGING,
+};
+use windows::Win32::Graphics::Dxgi::{
+    CreateDXGIFactory1, IDXGIAdapter, IDXGIDevice, IDXGIFactory1,
+};
+use windows::Win32::Graphics::Gdi::{MonitorFromWindow, HMONITOR, MONITOR_DEFAULTTONEAREST};
+use windows::Win32::System::Com::CoIncrementMTAUsage;
 use windows::Win32::System::WinRT::Direct3D11::{
     CreateDirect3D11DeviceFromDXGIDevice, IDirect3DDxgiInterfaceAccess,
 };
@@ -84,12 +89,27 @@ pub struct WgcCaptureHandle {
     pub borderless_applied: bool,
 }
 
+/// Pins the process-wide COM/WinRT Multi-Threaded Apartment alive for the lifetime of the process.
+///
+/// Without a process-lifetime MTA reference (`CoIncrementMTAUsage`), calling `RoUninitialize()` on
+/// the last transient worker thread drops the MTA refcount to zero and unloads `GraphicsCapture.dll`
+/// while WGC's own free-threaded teardown callbacks are still executing, causing `0xC0000005`.
+pub(crate) fn ensure_process_mta() {
+    static MTA_COOKIE: OnceLock<usize> = OnceLock::new();
+    let _ = MTA_COOKIE.get_or_init(|| {
+        // SAFETY: `CoIncrementMTAUsage` increments the process-wide MTA usage count and returns an
+        // opaque cookie intentionally kept alive until process exit.
+        unsafe { CoIncrementMTAUsage().map_or(0, |cookie| cookie.0 as usize) }
+    });
+}
+
 struct RoGuard {
     should_uninit: bool,
 }
 
 impl RoGuard {
     fn init_mta() -> Self {
+        ensure_process_mta();
         // SAFETY: standard WinRT MTA init; skip uninit if thread was already initialized differently.
         let hr = unsafe { RoInitialize(RO_INIT_MULTITHREADED) };
         let should_uninit = match hr {
@@ -116,6 +136,7 @@ struct StagingState {
     winrt_device: IDirect3DDevice,
     staging: Option<(ID3D11Texture2D, u32, u32)>,
     pool_size: SizeInt32,
+    closed: bool,
 }
 
 // SAFETY: `ID3D11Device`, `ID3D11DeviceContext` (serialized exclusively behind `Mutex<StagingState>`)
@@ -140,6 +161,8 @@ impl StagingState {
             staging_desc.MiscFlags = 0;
             staging_desc.MipLevels = 1;
             staging_desc.ArraySize = 1;
+            staging_desc.SampleDesc.Count = 1;
+            staging_desc.SampleDesc.Quality = 0;
             let mut tex = None;
             // SAFETY: valid D3D11 device + initialized descriptor.
             unsafe {
@@ -224,7 +247,7 @@ fn run_wgc_worker<F, C>(
         WgcTarget::Monitor { .. } => CaptureContext::Screen,
     };
 
-    let (device, context, winrt_device) = match create_d3d11_and_winrt_device() {
+    let (device, context, winrt_device) = match create_d3d11_and_winrt_device(target) {
         Ok(v) => v,
         Err(e) => {
             let _ = ready_tx.send(Err(e));
@@ -278,8 +301,15 @@ fn run_wgc_worker<F, C>(
 
     // ADR 0008: exclude the system cursor so we draw our own smooth cursor from the 120 Hz log.
     let _ = session.SetIsCursorCaptureEnabled(false);
-    // ADR 0007: best-effort borderless; silently degrades to the yellow border when refused.
-    let borderless_applied = session.SetIsBorderRequired(false).is_ok();
+    // ADR 0007: only disable the border when Windows explicitly granted borderless access;
+    // otherwise keep the default yellow border without issuing a failing WinRT call.
+    let borderless_applied = if crate::permissions::CapturePermissions::borderless_status()
+        == crate::permissions::PermissionStatus::Granted
+    {
+        session.SetIsBorderRequired(false).is_ok()
+    } else {
+        false
+    };
 
     let crop = match target {
         WgcTarget::Monitor { crop, .. } => crop,
@@ -297,6 +327,7 @@ fn run_wgc_worker<F, C>(
         winrt_device,
         staging: None,
         pool_size: item_size,
+        closed: false,
     }));
     let on_frame = Arc::new(Mutex::new(on_frame));
     let on_closed = Arc::new(Mutex::new(on_closed));
@@ -349,6 +380,9 @@ fn run_wgc_worker<F, C>(
         // Resize the frame pool if a captured window resized dynamically.
         if content_size.Width > 0 && content_size.Height > 0 {
             let mut st = staging_cb.lock();
+            if st.closed {
+                return Ok(());
+            }
             let resized = content_size.Width != st.pool_size.Width
                 || content_size.Height != st.pool_size.Height;
             if resized
@@ -375,6 +409,11 @@ fn run_wgc_worker<F, C>(
         if let Ok(tok) = closed_token {
             let _ = item.RemoveClosed(tok);
         }
+        {
+            let mut st = staging.lock();
+            st.closed = true;
+            st.staging = None;
+        }
         let _ = session.Close();
         let _ = frame_pool.Close();
         let _ = ready_tx.send(Err(map_code(e.code().0 as u32, &e.to_string(), ctx_kind)));
@@ -388,37 +427,72 @@ fn run_wgc_worker<F, C>(
         thread::sleep(Duration::from_millis(10));
     }
 
+    stop.store(true, Ordering::SeqCst);
     if let Ok(tok) = arrived_token {
         let _ = frame_pool.RemoveFrameArrived(tok);
     }
     if let Ok(tok) = closed_token {
         let _ = item.RemoveClosed(tok);
     }
+    // Synchronize with any in-flight `FrameArrived` callback: acquiring `staging` waits until any
+    // active `CopyResource`/`Map`/`Unmap` completes, and setting `closed = true` guarantees later
+    // callbacks bail out before touching the pool or D3D11 textures while `Close()` tears them down.
+    {
+        let mut st = staging.lock();
+        st.closed = true;
+        st.staging = None;
+    }
     let _ = session.Close();
     let _ = frame_pool.Close();
 }
 
+/// Finds the DXGI adapter that owns the display containing `target` so hybrid-GPU laptops
+/// (e.g., Intel iGPU primary + NVIDIA/AMD dGPU external display) create the WGC D3D11 device on
+/// the same adapter as the captured monitor, avoiding unstable cross-adapter copies.
+fn find_adapter_for_target(target: WgcTarget) -> Option<IDXGIAdapter> {
+    let target_hmon = match target {
+        WgcTarget::Monitor { hmonitor, .. } => HMONITOR(hmonitor as *mut _),
+        WgcTarget::Window { hwnd } => {
+            // SAFETY: `MonitorFromWindow` safely handles any HWND and returns a valid HMONITOR.
+            unsafe { MonitorFromWindow(HWND(hwnd as usize as *mut _), MONITOR_DEFAULTTONEAREST) }
+        }
+    };
+    if target_hmon.0.is_null() {
+        return None;
+    }
+    // SAFETY: standard DXGI 1.1 factory/adapter/output enumeration.
+    unsafe {
+        let factory: IDXGIFactory1 = CreateDXGIFactory1().ok()?;
+        let mut adapter_idx = 0u32;
+        while let Ok(adapter) = factory.EnumAdapters1(adapter_idx) {
+            let mut output_idx = 0u32;
+            while let Ok(output) = adapter.EnumOutputs(output_idx) {
+                if let Ok(desc) = output.GetDesc() {
+                    if desc.Monitor == target_hmon {
+                        return adapter.cast::<IDXGIAdapter>().ok();
+                    }
+                }
+                output_idx += 1;
+            }
+            adapter_idx += 1;
+        }
+    }
+    None
+}
+
 fn create_d3d11_and_winrt_device(
+    target: WgcTarget,
 ) -> Result<(ID3D11Device, ID3D11DeviceContext, IDirect3DDevice), NssError> {
     let mut device = None;
     let mut context = None;
-    // SAFETY: valid out-pointers; try hardware first and fall back to WARP software adapter.
+    let matched_adapter = find_adapter_for_target(target);
+    // SAFETY: valid out-pointers; prefer the DXGI adapter that owns the target display, then fall
+    // back to the default hardware adapter and finally WARP software rendering.
     let res = unsafe {
-        D3D11CreateDevice(
-            None,
-            D3D_DRIVER_TYPE_HARDWARE,
-            HMODULE::default(),
-            D3D11_CREATE_DEVICE_BGRA_SUPPORT,
-            None,
-            D3D11_SDK_VERSION,
-            Some(&mut device),
-            None,
-            Some(&mut context),
-        )
-        .or_else(|_| {
+        let on_matched = if let Some(ref adapter) = matched_adapter {
             D3D11CreateDevice(
-                None,
-                D3D_DRIVER_TYPE_WARP,
+                adapter,
+                D3D_DRIVER_TYPE_UNKNOWN,
                 HMODULE::default(),
                 D3D11_CREATE_DEVICE_BGRA_SUPPORT,
                 None,
@@ -427,7 +501,40 @@ fn create_d3d11_and_winrt_device(
                 None,
                 Some(&mut context),
             )
-        })
+        } else {
+            Err(windows::core::Error::empty())
+        };
+        on_matched
+            .or_else(|_| {
+                device = None;
+                context = None;
+                D3D11CreateDevice(
+                    None,
+                    D3D_DRIVER_TYPE_HARDWARE,
+                    HMODULE::default(),
+                    D3D11_CREATE_DEVICE_BGRA_SUPPORT,
+                    None,
+                    D3D11_SDK_VERSION,
+                    Some(&mut device),
+                    None,
+                    Some(&mut context),
+                )
+            })
+            .or_else(|_| {
+                device = None;
+                context = None;
+                D3D11CreateDevice(
+                    None,
+                    D3D_DRIVER_TYPE_WARP,
+                    HMODULE::default(),
+                    D3D11_CREATE_DEVICE_BGRA_SUPPORT,
+                    None,
+                    D3D11_SDK_VERSION,
+                    Some(&mut device),
+                    None,
+                    Some(&mut context),
+                )
+            })
     };
     res.map_err(|e| {
         NssError::Unsupported(format!("Failed to initialize Direct3D 11 for capture: {e}"))
@@ -435,6 +542,15 @@ fn create_d3d11_and_winrt_device(
 
     let device = device.ok_or_else(|| NssError::Unsupported("D3D11 device was null.".into()))?;
     let context = context.ok_or_else(|| NssError::Unsupported("D3D11 context was null.".into()))?;
+    // `Direct3D11CaptureFramePool::CreateFreeThreaded` accesses the D3D11 device from WinRT
+    // thread-pool threads concurrently with our staging copies, so enable D3D11 multithread
+    // protection before wrapping the device.
+    if let Ok(mt) = device.cast::<ID3D11Multithread>() {
+        // SAFETY: `mt` is a live COM interface queried from `device`.
+        unsafe {
+            let _ = mt.SetMultithreadProtected(true);
+        }
+    }
     let dxgi_device: IDXGIDevice = device
         .cast()
         .map_err(|e| NssError::Unsupported(format!("D3D11 device missing IDXGIDevice: {e}")))?;
@@ -499,15 +615,21 @@ fn extract_bgra_frame(
     }
 
     let mut st = staging_lock.lock();
+    if st.closed {
+        return Ok(None);
+    }
     let staging_tex = st.ensure_staging(&desc)?.clone();
     let context = st.context.clone();
 
     let (crop_x, crop_y, out_w, out_h) = match crop {
         Some(c) => {
-            let x = c.x.min(desc.Width.saturating_sub(1));
-            let y = c.y.min(desc.Height.saturating_sub(1));
-            let w = c.width.min(desc.Width - x).max(2);
-            let h = c.height.min(desc.Height - y).max(2);
+            if desc.Width < 2 || desc.Height < 2 {
+                return Ok(None);
+            }
+            let x = c.x.min(desc.Width - 2);
+            let y = c.y.min(desc.Height - 2);
+            let w = c.width.clamp(2, desc.Width - x);
+            let h = c.height.clamp(2, desc.Height - y);
             (x, y, w, h)
         }
         None => (0, 0, desc.Width, desc.Height),
@@ -524,15 +646,15 @@ fn extract_bgra_frame(
 
     let row_pitch = mapped.RowPitch as usize;
     let out_row_bytes = (out_w as usize) * 4;
+    let crop_x_bytes = (crop_x as usize) * 4;
     let mut bgra = vec![0u8; out_row_bytes * (out_h as usize)];
 
-    if !mapped.pData.is_null() {
+    if !mapped.pData.is_null() && crop_x_bytes.saturating_add(out_row_bytes) <= row_pitch {
         let base = mapped.pData.cast::<u8>();
-        // SAFETY: `crop_y + out_h <= desc.Height` and `(crop_x + out_w) * 4 <= row_pitch`.
+        // SAFETY: `crop_y + out_h <= desc.Height` and `crop_x_bytes + out_row_bytes <= row_pitch`.
         unsafe {
             for row in 0..(out_h as usize) {
-                let src_row =
-                    base.add(((crop_y as usize) + row) * row_pitch + (crop_x as usize) * 4);
+                let src_row = base.add(((crop_y as usize) + row) * row_pitch + crop_x_bytes);
                 let dst_row = bgra.as_mut_ptr().add(row * out_row_bytes);
                 std::ptr::copy_nonoverlapping(src_row, dst_row, out_row_bytes);
             }

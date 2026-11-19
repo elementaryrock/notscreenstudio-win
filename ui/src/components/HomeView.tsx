@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   createDemoProject,
   deleteProject,
@@ -7,7 +7,7 @@ import {
   renameProject,
   revealPath,
 } from "../ipc";
-import { formatCfDate, formatDurationShort } from "../editor/editorLogic";
+import { formatCfDate, formatDurationShort, formatElapsedTimer } from "../editor/editorLogic";
 import { strings } from "../strings";
 import type { CoreInfo, ProjectReference, ProjectSummary, ShellSnapshot } from "../types";
 
@@ -52,9 +52,35 @@ export function HomeView({
     }
   };
 
+  const lastPhaseKindRef = useRef<string | null>(null);
+
   useEffect(() => {
-    void refresh();
+    const kind = shell?.phase.kind ?? "init";
+    // Avoid double-fetching when `shell` transitions from `null` to `"idle"` right after mount.
+    if (lastPhaseKindRef.current === null) {
+      lastPhaseKindRef.current = kind;
+      void refresh();
+      return;
+    }
+    if (lastPhaseKindRef.current === "init" && kind === "idle") {
+      lastPhaseKindRef.current = kind;
+      return;
+    }
+    if (lastPhaseKindRef.current !== kind) {
+      lastPhaseKindRef.current = kind;
+      if (kind === "idle" || kind === "editing") {
+        void refresh();
+      }
+    }
   }, [shell?.phase.kind]);
+
+  const handleReveal = async (path: string): Promise<void> => {
+    try {
+      await revealPath(path);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    }
+  };
 
   const handleDemo = async (): Promise<void> => {
     try {
@@ -90,6 +116,7 @@ export function HomeView({
   };
 
   const isRecording = shell?.phase.kind === "recording";
+  const isBusyTransition = shell?.phase.kind === "preparing" || shell?.phase.kind === "saving";
 
   return (
     <div className="home-shell" onClick={() => setMenuId(null)}>
@@ -108,7 +135,7 @@ export function HomeView({
             <button
               className="btn-secondary"
               type="button"
-              onClick={() => void revealPath(core.libraryDir)}
+              onClick={() => void handleReveal(core.libraryDir)}
               title={core.libraryDir}
             >
               {strings.openLibraryFolder}
@@ -123,7 +150,7 @@ export function HomeView({
           <button
             className="btn-record"
             type="button"
-            disabled={shell?.phase.kind === "preparing" || shell?.phase.kind === "saving"}
+            disabled={isBusyTransition}
             onClick={isRecording ? onStopRecording : onOpenSetup}
           >
             <span className={`rec-glyph ${isRecording ? "stop" : ""}`} />
@@ -137,7 +164,7 @@ export function HomeView({
           <span className={`pulse-dot ${shell.paused ? "paused" : ""}`} />
           <strong>
             {shell.paused ? strings.paused : strings.recording} •{" "}
-            {formatDurationShort(shell.elapsedSeconds)}
+            {formatElapsedTimer(shell.elapsedSeconds)}
           </strong>
           <div className="live-banner-actions">
             <button className="btn-secondary" type="button" onClick={onPauseToggle}>
@@ -186,7 +213,12 @@ export function HomeView({
             <h2>{strings.emptyLibraryTitle}</h2>
             <p>{strings.emptyLibraryBody}</p>
             <div className="empty-actions">
-              <button className="btn-record" type="button" onClick={onOpenSetup}>
+              <button
+                className="btn-record"
+                type="button"
+                disabled={isBusyTransition || isRecording}
+                onClick={onOpenSetup}
+              >
                 <span className="rec-glyph" />
                 {strings.newRecording}
               </button>
@@ -257,7 +289,7 @@ export function HomeView({
                       type="button"
                       onClick={() => {
                         setMenuId(null);
-                        void revealPath(p.bundle.url);
+                        void handleReveal(p.bundle.url);
                       }}
                     >
                       {strings.showInExplorer}
@@ -286,7 +318,10 @@ function ProjectThumb({ summary }: { summary: ProjectSummary }): React.JSX.Eleme
   useEffect(() => {
     let active = true;
     let objectUrl: string | null = null;
-    if (!summary.thumbnailURL) return;
+    if (!summary.thumbnailURL) {
+      setUrl(null);
+      return;
+    }
     void (async () => {
       try {
         const bytes = await getProjectThumbnail(summary.thumbnailURL!);

@@ -48,7 +48,9 @@ export function TimelinePanel({
 }: TimelinePanelProps): React.JSX.Element {
   const lanesRef = useRef<HTMLDivElement | null>(null);
   const dragRef = useRef<DragAction | null>(null);
+  const captureTargetRef = useRef<HTMLElement | null>(null);
   const movedRef = useRef(false);
+  const suppressClickRef = useRef(false);
   const [thumbUrls, setThumbUrls] = useState<string[]>([]);
 
   const safeDuration = Math.max(duration, 0.1);
@@ -101,7 +103,9 @@ export function TimelinePanel({
 
   const startDrag = (e: React.PointerEvent, action: DragAction): void => {
     e.stopPropagation();
-    (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+    const target = e.currentTarget as HTMLElement;
+    target.setPointerCapture(e.pointerId);
+    captureTargetRef.current = target;
     dragRef.current = action;
     movedRef.current = false;
     if (action.kind !== "scrub") {
@@ -120,17 +124,26 @@ export function TimelinePanel({
       return;
     }
     if (act.kind === "trim-start") {
+      const nextTrim = setTrimStart(t, project.timeline.trim, safeDuration);
       onUpdateTimeline({
         ...project.timeline,
-        trim: setTrimStart(t, project.timeline.trim, safeDuration),
+        trim: nextTrim,
       });
+      if (playheadTime < nextTrim.start) {
+        onScrubTime(nextTrim.start);
+      }
       return;
     }
     if (act.kind === "trim-end") {
+      const nextTrim = setTrimEnd(t, project.timeline.trim, safeDuration);
       onUpdateTimeline({
         ...project.timeline,
-        trim: setTrimEnd(t, project.timeline.trim, safeDuration),
+        trim: nextTrim,
       });
+      const nextEnd = resolvedTrimEnd(nextTrim, safeDuration);
+      if (playheadTime > nextEnd) {
+        onScrubTime(nextEnd);
+      }
       return;
     }
     if (act.kind === "zoom-move") {
@@ -163,10 +176,20 @@ export function TimelinePanel({
     const act = dragRef.current;
     if (!act) return;
     dragRef.current = null;
-    try {
-      (e.currentTarget as HTMLElement).releasePointerCapture(e.pointerId);
-    } catch {
-      // Capture may already have been released.
+    const captured = captureTargetRef.current;
+    captureTargetRef.current = null;
+    if (captured) {
+      try {
+        captured.releasePointerCapture(e.pointerId);
+      } catch {
+        // Capture may already have been released.
+      }
+    }
+    if (movedRef.current) {
+      suppressClickRef.current = true;
+      window.setTimeout(() => {
+        suppressClickRef.current = false;
+      }, 0);
     }
     if (act.kind === "scrub" && !movedRef.current) {
       onJumpTime(clientXToTime(e.clientX));
@@ -199,7 +222,13 @@ export function TimelinePanel({
         <div
           className="timeline-lanes"
           ref={lanesRef}
-          onClick={() => onSelectZoom(null)}
+          onClick={() => {
+            if (suppressClickRef.current) {
+              suppressClickRef.current = false;
+              return;
+            }
+            onSelectZoom(null);
+          }}
         >
           {/* Time Ruler */}
           <div

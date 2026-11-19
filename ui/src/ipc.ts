@@ -17,6 +17,7 @@ import type {
   FfmpegStatusDto,
   OverlayKind,
   PermissionsDto,
+  PreviewLayoutDto,
   Project,
   ProjectReference,
   ProjectSummary,
@@ -194,6 +195,14 @@ export async function renderPreviewFrame(
   return decodeRgbaPacket(buf);
 }
 
+export async function getPreviewLayout(
+  time: number,
+  maxWidth: number,
+  maxHeight: number,
+): Promise<PreviewLayoutDto> {
+  return invoke<PreviewLayoutDto>("get_preview_layout", { time, maxWidth, maxHeight });
+}
+
 export async function getTimelineThumbnails(
   count: number,
   thumbWidth: number,
@@ -270,4 +279,8 @@ export function onElapsed(cb: (secs: number) => void): Promise<UnlistenFn> {
 
 export function onAreaSelected(cb: (src: CaptureSource | null) => void): Promise<UnlistenFn> {
   return listen<CaptureSource | null>("nss://area-selected", (e) => cb(e.payload));
+}
+
+export function onSettingsChanged(cb: (s: ShellSettings) => void): Promise<UnlistenFn> {
+  return listen<ShellSettings>("nss://settings-changed", (e) => cb(e.payload));
 }

@@ -251,9 +251,16 @@ impl<R: FrameRenderer> Mp4Exporter<R> {
         );
         let mut frames = (self.frame_source_factory)(&screen_path, camera_path.as_deref())?;
 
+        let sys_audio_path = {
+            let candidate = bundle_dir.join("system_audio.m4a");
+            candidate.is_file().then_some(candidate)
+        };
         let mut audio_candidates: Vec<&Path> = Vec::new();
         if let Some(ref mic) = mic_path {
             audio_candidates.push(mic.as_path());
+        }
+        if let Some(ref sys) = sys_audio_path {
+            audio_candidates.push(sys.as_path());
         }
         audio_candidates.push(screen_path.as_path());
         let audio_plan = AudioMixPlan::discover(&ffmpeg, &audio_candidates, start, length);

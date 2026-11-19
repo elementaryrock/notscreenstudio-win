@@ -38,6 +38,7 @@ pub fn cursor_pos() -> Option<Point2> {
 pub fn display_rect_and_scale(display_id: u32) -> Option<(Rect, f64)> {
     struct Search {
         target_id: u32,
+        index: u32,
         found: Option<(Rect, f64)>,
     }
 
@@ -48,7 +49,9 @@ pub fn display_rect_and_scale(display_id: u32) -> Option<(Rect, f64)> {
         lparam: LPARAM,
     ) -> BOOL {
         let state = &mut *(lparam.0 as *mut Search);
-        let id = (hmonitor.0 as usize & 0xFFFF_FFFF) as u32;
+        state.index += 1;
+        let raw_id = (hmonitor.0 as usize & 0xFFFF_FFFF) as u32;
+        let id = if raw_id == 0 { state.index } else { raw_id };
         if id != state.target_id {
             return BOOL(1);
         }
@@ -78,6 +81,7 @@ pub fn display_rect_and_scale(display_id: u32) -> Option<(Rect, f64)> {
 
     let mut search = Search {
         target_id: display_id,
+        index: 0,
         found: None,
     };
     // SAFETY: `search` outlives the synchronous `EnumDisplayMonitors` call.

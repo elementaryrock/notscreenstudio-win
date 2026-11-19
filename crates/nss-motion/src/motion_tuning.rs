@@ -149,10 +149,10 @@ impl MotionTuning {
     /// Cursor spring for a `CursorStyle::smoothing` value, or `None` for the raw cursor.
     #[must_use]
     pub fn cursor_spring(&self, smoothing: f64) -> Option<Spring> {
-        let s = smoothing.clamp(0.0, 1.0);
-        if s <= 0.0 {
+        if !smoothing.is_finite() || smoothing <= 0.0 {
             return None;
         }
+        let s = smoothing.clamp(0.0, 1.0);
         Some(Spring::new(
             self.cursor_min_response + s * (self.cursor_max_response - self.cursor_min_response),
             self.cursor_damping_ratio,
@@ -168,9 +168,12 @@ impl MotionTuning {
         } else {
             240.0
         };
+        if !span.is_finite() || span <= 0.0 {
+            return rate;
+        }
         let max_steps = max_steps(self) as f64;
-        if span > 0.0 && span * rate > max_steps {
-            rate = max_steps / span;
+        if span * rate > max_steps {
+            rate = (max_steps / span).max(1e-6);
         }
         rate
     }

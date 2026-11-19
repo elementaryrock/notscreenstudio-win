@@ -110,6 +110,29 @@ pub fn is_temp_name(name: &str) -> bool {
     name.starts_with('.') && name.contains(TEMP_MARKER)
 }
 
+/// Reads `path`, retrying transient Windows sharing/lock violations briefly.
+pub(crate) fn read_with_retry(path: &Path) -> std::io::Result<Vec<u8>> {
+    let started = std::time::Instant::now();
+    let mut backoff = Duration::from_millis(2);
+    let budget = Duration::from_millis(500);
+    loop {
+        match fs::read(path) {
+            Ok(data) => return Ok(data),
+            Err(e) => {
+                let transient = e.kind() == std::io::ErrorKind::PermissionDenied
+                    || e.kind() == std::io::ErrorKind::Interrupted
+                    || e.raw_os_error() == Some(32)
+                    || e.raw_os_error() == Some(33);
+                if !transient || started.elapsed() + backoff > budget {
+                    return Err(e);
+                }
+                std::thread::sleep(backoff);
+                backoff = (backoff * 2).min(Duration::from_millis(50));
+            }
+        }
+    }
+}
+
 /// `rename(2)`, retried while Windows reports the destination as busy.
 fn replace(from: &Path, to: &Path) -> Result<(), ProjectError> {
     let started = std::time::Instant::now();

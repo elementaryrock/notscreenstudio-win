@@ -15,9 +15,9 @@ use windows::core::{GUID, PWSTR};
 use windows::Win32::Devices::FunctionDiscovery::PKEY_Device_FriendlyName;
 use windows::Win32::Foundation::RPC_E_CHANGED_MODE;
 use windows::Win32::Media::Audio::{
-    eCapture, eConsole, IAudioCaptureClient, IAudioClient, IMMDevice, IMMDeviceEnumerator,
-    MMDeviceEnumerator, AUDCLNT_BUFFERFLAGS_SILENT, AUDCLNT_SHAREMODE_SHARED, DEVICE_STATE_ACTIVE,
-    WAVEFORMATEX, WAVEFORMATEXTENSIBLE,
+    eCapture, eConsole, eRender, IAudioCaptureClient, IAudioClient, IMMDevice, IMMDeviceEnumerator,
+    MMDeviceEnumerator, AUDCLNT_BUFFERFLAGS_SILENT, AUDCLNT_SHAREMODE_SHARED,
+    AUDCLNT_STREAMFLAGS_LOOPBACK, DEVICE_STATE_ACTIVE, WAVEFORMATEX, WAVEFORMATEXTENSIBLE,
 };
 use windows::Win32::Media::KernelStreaming::{KSDATAFORMAT_SUBTYPE_PCM, WAVE_FORMAT_EXTENSIBLE};
 use windows::Win32::Media::MediaFoundation::{
@@ -26,9 +26,9 @@ use windows::Win32::Media::MediaFoundation::{
     MFShutdown, MFStartup, MFVideoFormat_RGB32, MFSTARTUP_LITE,
     MF_DEVSOURCE_ATTRIBUTE_FRIENDLY_NAME, MF_DEVSOURCE_ATTRIBUTE_SOURCE_TYPE,
     MF_DEVSOURCE_ATTRIBUTE_SOURCE_TYPE_VIDCAP_GUID,
-    MF_DEVSOURCE_ATTRIBUTE_SOURCE_TYPE_VIDCAP_SYMBOLIC_LINK, MF_MT_FRAME_SIZE, MF_MT_MAJOR_TYPE,
-    MF_MT_SUBTYPE, MF_SOURCE_READER_ENABLE_VIDEO_PROCESSING, MF_SOURCE_READER_FIRST_VIDEO_STREAM,
-    MF_VERSION,
+    MF_DEVSOURCE_ATTRIBUTE_SOURCE_TYPE_VIDCAP_SYMBOLIC_LINK, MF_MT_DEFAULT_STRIDE,
+    MF_MT_FRAME_SIZE, MF_MT_MAJOR_TYPE, MF_MT_SUBTYPE, MF_SOURCE_READER_ENABLE_VIDEO_PROCESSING,
+    MF_SOURCE_READER_FIRST_VIDEO_STREAM, MF_VERSION,
 };
 use windows::Win32::Media::Multimedia::{KSDATAFORMAT_SUBTYPE_IEEE_FLOAT, WAVE_FORMAT_IEEE_FLOAT};
 use windows::Win32::System::Com::StructuredStorage::PropVariantClear;
@@ -183,16 +183,45 @@ impl WasapiCaptureHandle {
         F: FnMut(CapturedAudioPacket) + Send + 'static,
         E: FnOnce(NssError) + Send + 'static,
     {
+        Self::start_inner(device_id, false, "nss-wasapi-mic", on_packet, on_error)
+    }
+
+    /// Starts capturing desktop/system audio via WASAPI loopback on the default render endpoint.
+    pub fn start_loopback<F, E>(on_packet: F, on_error: E) -> Result<Self, NssError>
+    where
+        F: FnMut(CapturedAudioPacket) + Send + 'static,
+        E: FnOnce(NssError) + Send + 'static,
+    {
+        Self::start_inner(
+            String::new(),
+            true,
+            "nss-wasapi-loopback",
+            on_packet,
+            on_error,
+        )
+    }
+
+    fn start_inner<F, E>(
+        device_id: String,
+        loopback: bool,
+        thread_name: &str,
+        on_packet: F,
+        on_error: E,
+    ) -> Result<Self, NssError>
+    where
+        F: FnMut(CapturedAudioPacket) + Send + 'static,
+        E: FnOnce(NssError) + Send + 'static,
+    {
         let stop_flag = Arc::new(AtomicBool::new(false));
         let worker_stop = Arc::clone(&stop_flag);
         let (tx, rx) = std::sync::mpsc::sync_channel::<Result<AudioStreamFormat, NssError>>(1);
 
         let join = thread::Builder::new()
-            .name("nss-wasapi-mic".into())
+            .name(thread_name.into())
             .spawn(move || {
-                run_wasapi_loop(device_id, worker_stop, tx, on_packet, on_error);
+                run_wasapi_loop(device_id, loopback, worker_stop, tx, on_packet, on_error);
             })
-            .map_err(|e| NssError::Io(format!("Failed to start microphone capture thread: {e}")))?;
+            .map_err(|e| NssError::Io(format!("Failed to start audio capture thread: {e}")))?;
 
         match rx.recv() {
             Ok(Ok(format)) => Ok(Self {
@@ -209,7 +238,7 @@ impl WasapiCaptureHandle {
                 stop_flag.store(true, Ordering::SeqCst);
                 let _ = join.join();
                 Err(NssError::Io(
-                    "Microphone capture thread exited unexpectedly.".into(),
+                    "Audio capture thread exited unexpectedly.".into(),
                 ))
             }
         }
@@ -309,6 +338,7 @@ enum SampleKind {
 
 fn run_wasapi_loop<F, E>(
     device_id: String,
+    loopback: bool,
     stop: Arc<AtomicBool>,
     ready_tx: std::sync::mpsc::SyncSender<Result<AudioStreamFormat, NssError>>,
     mut on_packet: F,
@@ -318,17 +348,22 @@ fn run_wasapi_loop<F, E>(
     E: FnOnce(NssError),
 {
     let _com = ComGuard::init_mta();
-    let setup = unsafe { setup_wasapi(&device_id) };
-    let (client, capture, format, sample_kind) = match setup {
+    let setup = unsafe { setup_wasapi(&device_id, loopback) };
+    let (client, capture, raw_format, sample_kind) = match setup {
         Ok(v) => v,
         Err(e) => {
             let _ = ready_tx.send(Err(e));
             return;
         }
     };
-    let _ = ready_tx.send(Ok(format));
+    let in_channels = usize::from(raw_format.channels.max(1));
+    let out_channels = raw_format.channels.clamp(1, 2);
+    let reported_format = AudioStreamFormat {
+        sample_rate: raw_format.sample_rate,
+        channels: out_channels,
+    };
+    let _ = ready_tx.send(Ok(reported_format));
 
-    let channels = usize::from(format.channels.max(1));
     let mut failure: Option<NssError> = None;
 
     // SAFETY: `capture` is valid on this thread; every `GetBuffer` is paired with `ReleaseBuffer`.
@@ -365,12 +400,26 @@ fn run_wasapi_loop<F, E>(
                 }
                 let t = host_now();
                 let frames = num_frames as usize;
-                let total_samples = frames * channels;
+                let out_ch = usize::from(out_channels);
                 let samples =
                     if (flags & AUDCLNT_BUFFERFLAGS_SILENT.0 as u32) != 0 || data_ptr.is_null() {
-                        vec![0.0f32; total_samples]
+                        vec![0.0f32; frames * out_ch]
                     } else {
-                        decode_pcm_to_f32(data_ptr, total_samples, sample_kind)
+                        let raw = decode_pcm_to_f32(data_ptr, frames * in_channels, sample_kind);
+                        if in_channels == out_ch {
+                            raw
+                        } else {
+                            // Downmix multi-channel (e.g. 5.1/7.1) capture to front L/R stereo so
+                            // downstream FFmpeg `-ac 2` stays in lock-step.
+                            let mut stereo = Vec::with_capacity(frames * out_ch);
+                            for frame in raw.chunks_exact(in_channels) {
+                                stereo.push(frame[0]);
+                                if out_ch == 2 {
+                                    stereo.push(frame[1]);
+                                }
+                            }
+                            stereo
+                        }
                     };
                 let _ = capture.ReleaseBuffer(num_frames);
 
@@ -398,6 +447,7 @@ fn run_wasapi_loop<F, E>(
 
 unsafe fn setup_wasapi(
     device_id: &str,
+    loopback: bool,
 ) -> Result<
     (
         IAudioClient,
@@ -416,7 +466,17 @@ unsafe fn setup_wasapi(
         )
     })?;
 
-    let device: IMMDevice = if device_id.is_empty() || device_id.eq_ignore_ascii_case("default") {
+    let device: IMMDevice = if loopback {
+        enumerator
+            .GetDefaultAudioEndpoint(eRender, eConsole)
+            .map_err(|e| {
+                map_code(
+                    e.code().0 as u32,
+                    &e.to_string(),
+                    CaptureContext::Microphone,
+                )
+            })?
+    } else if device_id.is_empty() || device_id.eq_ignore_ascii_case("default") {
         enumerator
             .GetDefaultAudioEndpoint(eCapture, eConsole)
             .map_err(|e| {
@@ -458,9 +518,14 @@ unsafe fn setup_wasapi(
     let (format, sample_kind) = parse_wave_format(mix_ptr)?;
     // 100 ms buffer in 100-ns units.
     let buffer_duration_hns = 1_000_000i64;
+    let stream_flags = if loopback {
+        AUDCLNT_STREAMFLAGS_LOOPBACK
+    } else {
+        0
+    };
     let init_res = client.Initialize(
         AUDCLNT_SHAREMODE_SHARED,
-        0,
+        stream_flags,
         buffer_duration_hns,
         0,
         mix_ptr,
@@ -609,7 +674,7 @@ fn run_mf_camera_loop<F, E>(
     }
 
     let setup = unsafe { setup_mf_camera(&device_id) };
-    let (reader, width, height) = match setup {
+    let (reader, width, height, default_stride) = match setup {
         Ok(v) => v,
         Err(e) => {
             let _ = ready_tx.send(Err(e));
@@ -621,7 +686,15 @@ fn run_mf_camera_loop<F, E>(
     };
     let _ = ready_tx.send(Ok((width, height)));
 
-    let expected_bytes = (width as usize) * (height as usize) * 4;
+    let row_bytes = (width as usize) * 4;
+    let expected_bytes = row_bytes * (height as usize);
+    let bottom_up = default_stride < 0;
+    let abs_stride = default_stride.unsigned_abs() as usize;
+    let src_stride = if abs_stride >= row_bytes {
+        abs_stride
+    } else {
+        row_bytes
+    };
     let mut failure: Option<NssError> = None;
 
     // SAFETY: `reader` lives on this thread until loop exit before `MFShutdown`.
@@ -655,9 +728,24 @@ fn run_mf_camera_loop<F, E>(
                 let mut cur_len: u32 = 0;
                 if buf.Lock(&mut data_ptr, None, Some(&mut cur_len)).is_ok() && !data_ptr.is_null()
                 {
-                    let len = (cur_len as usize).min(expected_bytes);
+                    let cur_len = cur_len as usize;
                     let mut bgra = vec![0u8; expected_bytes];
-                    std::ptr::copy_nonoverlapping(data_ptr, bgra.as_mut_ptr(), len);
+                    if src_stride * (height as usize) <= cur_len {
+                        // Copy row-by-row honoring both row padding and negative (bottom-up) stride.
+                        for dst_y in 0..(height as usize) {
+                            let src_y = if bottom_up {
+                                (height as usize - 1) - dst_y
+                            } else {
+                                dst_y
+                            };
+                            let src_row = data_ptr.add(src_y * src_stride);
+                            let dst_row = bgra.as_mut_ptr().add(dst_y * row_bytes);
+                            std::ptr::copy_nonoverlapping(src_row, dst_row, row_bytes);
+                        }
+                    } else {
+                        let len = cur_len.min(expected_bytes);
+                        std::ptr::copy_nonoverlapping(data_ptr, bgra.as_mut_ptr(), len);
+                    }
                     // Ensure opaque alpha for RGB32 (Windows often leaves the X byte 0).
                     for px in bgra.chunks_exact_mut(4) {
                         px[3] = 255;
@@ -681,7 +769,7 @@ fn run_mf_camera_loop<F, E>(
     }
 }
 
-unsafe fn setup_mf_camera(device_id: &str) -> Result<(IMFSourceReader, u32, u32), NssError> {
+unsafe fn setup_mf_camera(device_id: &str) -> Result<(IMFSourceReader, u32, u32, i32), NssError> {
     let mut attrs = None;
     MFCreateAttributes(&mut attrs, 1)
         .map_err(|e| map_code(e.code().0 as u32, &e.to_string(), CaptureContext::Camera))?;
@@ -767,8 +855,12 @@ unsafe fn setup_mf_camera(device_id: &str) -> Result<(IMFSourceReader, u32, u32)
         .unwrap_or((1280 << 32) | 720);
     let width = ((packed >> 32) as u32).max(2);
     let height = ((packed & 0xFFFF_FFFF) as u32).max(2);
+    let default_stride = actual
+        .GetUINT32(&MF_MT_DEFAULT_STRIDE)
+        .map(|u| u as i32)
+        .unwrap_or((width * 4) as i32);
 
-    Ok((reader, width, height))
+    Ok((reader, width, height, default_stride))
 }
 
 unsafe fn device_id_string(device: &IMMDevice) -> Option<String> {

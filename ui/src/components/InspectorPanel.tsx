@@ -65,31 +65,39 @@ export function InspectorPanel({
   useEffect(() => {
     let active = true;
     void (async () => {
-      const [p, wp] = await Promise.all([listBackgroundPresets(), listSystemWallpapers()]);
-      if (!active) return;
-      setPresets(p);
-      setWallpapers(wp);
+      try {
+        const [p, wp] = await Promise.all([listBackgroundPresets(), listSystemWallpapers()]);
+        if (!active) return;
+        setPresets(p);
+        setWallpapers(wp);
 
-      const entries = [...p.gradients, ...p.meshes];
-      const rendered = await Promise.all(
-        entries.map(async (entry) => {
-          const pkt = await renderBackgroundPreview(entry.background, 64, 40);
-          if (!pkt) return [entry.id, ""] as const;
-          const canvas = document.createElement("canvas");
-          canvas.width = pkt.width;
-          canvas.height = pkt.height;
-          const ctx = canvas.getContext("2d");
-          if (!ctx) return [entry.id, ""] as const;
-          ctx.putImageData(new ImageData(pkt.pixels, pkt.width, pkt.height), 0, 0);
-          return [entry.id, canvas.toDataURL("image/png")] as const;
-        }),
-      );
-      if (!active) return;
-      const map: Record<string, string> = {};
-      for (const [id, url] of rendered) {
-        if (url) map[id] = url;
+        const entries = [...p.gradients, ...p.meshes];
+        const rendered = await Promise.all(
+          entries.map(async (entry) => {
+            try {
+              const pkt = await renderBackgroundPreview(entry.background, 64, 40);
+              if (!pkt) return [entry.id, ""] as const;
+              const canvas = document.createElement("canvas");
+              canvas.width = pkt.width;
+              canvas.height = pkt.height;
+              const ctx = canvas.getContext("2d");
+              if (!ctx) return [entry.id, ""] as const;
+              ctx.putImageData(new ImageData(pkt.pixels, pkt.width, pkt.height), 0, 0);
+              return [entry.id, canvas.toDataURL("image/png")] as const;
+            } catch {
+              return [entry.id, ""] as const;
+            }
+          }),
+        );
+        if (!active) return;
+        const map: Record<string, string> = {};
+        for (const [id, url] of rendered) {
+          if (url) map[id] = url;
+        }
+        setSwatches(map);
+      } catch {
+        // Non-fatal: inspector still functions without rendered swatches.
       }
-      setSwatches(map);
     })();
     return () => {
       active = false;
@@ -121,9 +129,10 @@ export function InspectorPanel({
     const trimmed = rawPath.trim();
     if (!trimmed) return;
     updateStyle({ background: { image: { file: trimmed } } });
+    const lower = trimmed.toLowerCase();
     const recent = [
       trimmed,
-      ...settings.recentBackgroundImages.filter((p) => p !== trimmed),
+      ...settings.recentBackgroundImages.filter((p) => p.toLowerCase() !== lower),
     ].slice(0, 8);
     const nextSettings: ShellSettings = { ...settings, recentBackgroundImages: recent };
     onSettingsChange(nextSettings);
@@ -150,7 +159,9 @@ export function InspectorPanel({
   const handleRegenAutoZoom = async (): Promise<void> => {
     setZoomNotice(null);
     try {
-      const nextBlocks = await planAutoZooms(project.timeline.zoomBlocks);
+      const manual = removeAutoZooms(project.timeline.zoomBlocks);
+      const auto = await planAutoZooms(manual);
+      const nextBlocks = [...manual, ...auto].sort((a, b) => a.start - b.start);
       onCommitProject({
         ...project,
         timeline: { ...project.timeline, zoomBlocks: nextBlocks, autoZoomEnabled: false },
@@ -165,7 +176,7 @@ export function InspectorPanel({
     const nextBlocks = removeAutoZooms(project.timeline.zoomBlocks);
     onCommitProject({
       ...project,
-      timeline: { ...project.timeline, zoomBlocks: nextBlocks },
+      timeline: { ...project.timeline, zoomBlocks: nextBlocks, autoZoomEnabled: false },
     });
     if (selectedZoom?.isAuto) onSelectZoom(null);
   };
@@ -298,9 +309,11 @@ export function InspectorPanel({
               <input
                 type="color"
                 value={activeSolidHex}
+                onFocus={onBeginDrag}
                 onChange={(e) =>
-                  updateStyle({ background: { solid: hexToRgba(e.target.value, 1) } })
+                  updateStyle({ background: { solid: hexToRgba(e.target.value, 1) } }, true)
                 }
+                onBlur={onEndDrag}
               />
             </label>
           </>
@@ -768,17 +781,22 @@ export function InspectorPanel({
             <input
               type="color"
               value={rgbaToHex(style.camera.border.color)}
+              onFocus={onBeginDrag}
               onChange={(e) =>
-                updateStyle({
-                  camera: {
-                    ...style.camera,
-                    border: {
-                      width: style.camera.border?.width ?? 0.004,
-                      color: hexToRgba(e.target.value, style.camera.border?.color.a ?? 1),
+                updateStyle(
+                  {
+                    camera: {
+                      ...style.camera,
+                      border: {
+                        width: style.camera.border?.width ?? 0.004,
+                        color: hexToRgba(e.target.value, style.camera.border?.color.a ?? 1),
+                      },
                     },
                   },
-                })
+                  true,
+                )
               }
+              onBlur={onEndDrag}
             />
           </label>
         )}
@@ -909,7 +927,9 @@ function SliderRow({
         onPointerDown={onBegin}
         onChange={(e) => onChange(parseFloat(e.target.value))}
         onPointerUp={onEnd}
+        onPointerCancel={onEnd}
         onKeyUp={onEnd}
+        onBlur={onEnd}
       />
     </div>
   );

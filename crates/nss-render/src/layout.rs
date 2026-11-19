@@ -58,9 +58,15 @@ impl RenderLayout {
         camera: CameraState,
     ) -> Self {
         let camera = clamped_camera(camera);
-        let w = f64::from(output_size.width.max(1));
-        let h = f64::from(output_size.height.max(1));
-        let pad = style.padding.max(0.0) * h;
+        let output_size = PixelSize::new(output_size.width.max(1), output_size.height.max(1));
+        let w = f64::from(output_size.width);
+        let h = f64::from(output_size.height);
+        let raw_padding = if style.padding.is_finite() {
+            style.padding.max(0.0)
+        } else {
+            0.0
+        };
+        let pad = raw_padding * h;
         let avail_w = (w - 2.0 * pad).max(1.0);
         let avail_h = (h - 2.0 * pad).max(1.0);
         let src_aspect = if source_size.width > 0 && source_size.height > 0 {
@@ -74,7 +80,12 @@ impl RenderLayout {
             (avail_h * src_aspect, avail_h)
         };
         let content_rect = Rect::new((w - cw) / 2.0, (h - ch) / 2.0, cw, ch);
-        let corner_radius = (style.corner_radius.max(0.0) * h).min(cw.min(ch) / 2.0);
+        let raw_radius = if style.corner_radius.is_finite() {
+            style.corner_radius.max(0.0)
+        } else {
+            0.0
+        };
+        let corner_radius = (raw_radius * h).min(cw.min(ch) / 2.0);
         Self {
             output_size,
             source_size,
@@ -135,7 +146,12 @@ impl RenderLayout {
     /// [`CursorStyle::size`].
     #[must_use]
     pub fn cursor_height(&self, style: &CursorStyle) -> f64 {
-        0.0165 * self.content_scale() * self.camera.scale * style.size.max(0.0)
+        let size = if style.size.is_finite() {
+            style.size.max(0.0)
+        } else {
+            0.0
+        };
+        0.0165 * self.content_scale() * self.camera.scale * size
     }
 
     /// Output pixels per cursor point (the unit of the cursor images and hotspots) at normal size,
@@ -149,9 +165,24 @@ impl RenderLayout {
     /// Output-pixel blur vector for the cursor (full shutter length, centred on the position).
     #[must_use]
     pub fn cursor_blur_vector(&self, velocity: NormalizedPoint, style: &CursorStyle) -> Point2 {
-        let shutter = style.motion_blur.clamp(0.0, 1.0) / 30.0;
-        let mut dx = velocity.x * self.content_rect.size.width * self.camera.scale * shutter;
-        let mut dy = velocity.y * self.content_rect.size.height * self.camera.scale * shutter;
+        let blur = if style.motion_blur.is_finite() {
+            style.motion_blur.clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
+        let vx = if velocity.x.is_finite() {
+            velocity.x
+        } else {
+            0.0
+        };
+        let vy = if velocity.y.is_finite() {
+            velocity.y
+        } else {
+            0.0
+        };
+        let shutter = blur / 30.0;
+        let mut dx = vx * self.content_rect.size.width * self.camera.scale * shutter;
+        let mut dy = vy * self.content_rect.size.height * self.camera.scale * shutter;
         let len = (dx * dx + dy * dy).sqrt();
         let cap = 3.0 * self.cursor_height(style);
         if len > cap && len > 0.0 {
@@ -170,7 +201,11 @@ impl RenderLayout {
     /// Ring radius in output pixels for `progress` 0...1 (ease-out expansion).
     #[must_use]
     pub fn ripple_radius(&self, progress: f64) -> f64 {
-        let p = progress.clamp(0.0, 1.0);
+        let p = if progress.is_finite() {
+            progress.clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
         let e = 1.0 - (1.0 - p).powi(3);
         self.ripple_max_radius() * (0.15 + 0.85 * e)
     }
@@ -178,7 +213,12 @@ impl RenderLayout {
     /// Ring opacity for `progress` 0...1.
     #[must_use]
     pub fn ripple_opacity(&self, progress: f64) -> f64 {
-        (1.0 - progress.clamp(0.0, 1.0)).powf(1.5)
+        let p = if progress.is_finite() {
+            progress.clamp(0.0, 1.0)
+        } else {
+            1.0
+        };
+        (1.0 - p).powf(1.5)
     }
 
     /// Ring stroke width in output pixels.
@@ -205,10 +245,25 @@ impl RenderLayout {
     pub fn camera_bubble_full_rect(&self, bubble: &CameraBubble) -> Rect {
         let w = f64::from(self.output_size.width);
         let h = f64::from(self.output_size.height);
-        let l = bubble.layout(bubble.size.max(0.0) * w);
+        let size = if bubble.size.is_finite() {
+            bubble.size.max(0.0)
+        } else {
+            0.0
+        };
+        let px = if bubble.position.x.is_finite() {
+            bubble.position.x
+        } else {
+            0.5
+        };
+        let py = if bubble.position.y.is_finite() {
+            bubble.position.y
+        } else {
+            0.5
+        };
+        let l = bubble.layout(size * w);
         Rect::new(
-            bubble.position.x * w - l.width / 2.0,
-            bubble.position.y * h - l.height / 2.0,
+            px * w - l.width / 2.0,
+            py * h - l.height / 2.0,
             l.width,
             l.height,
         )
