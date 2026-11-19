@@ -2271,14 +2271,22 @@ name = "notscreenstudio-win-app"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "nss-capture",
  "nss-core",
+ "nss-export",
+ "nss-input",
  "nss-motion",
  "nss-project",
+ "nss-render",
+ "parking_lot",
  "serde",
  "serde_json",
  "tauri",
  "tauri-build",
+ "tempfile",
  "thiserror 2.0.21",
+ "uuid",
+ "windows",
 ]
 
 [[package]]

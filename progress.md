@@ -121,16 +121,17 @@ See [PLAN.md](./PLAN.md) for architecture, milestones, and invariants, and [CONT
 
 ---
 
-## Stage 8 — Shell: Tray, HUD Windows, Hotkeys, Overlays, Settings (`src-tauri`) (NOT STARTED)
+## Stage 8 — Shell: Tray, HUD Windows, Hotkeys, Overlays, Settings (`src-tauri`) (DONE)
 
-- [ ] `settings.rs` (persisted `ShellSettings`: source, camera/mic devices, countdown, hotkeys, aspect, output dir, known-folder `SHGetKnownFolderPath(FOLDERID_Videos)` library root)
-- [ ] `shell_model.rs` (`ShellPhase`, `ShellModel`, `ShellCountdown`, `ElapsedClock`, `BarStyle`, `BubbleGeometry`, `ShellCapturePrivacy`)
-- [ ] `hotkey.rs` (`RegisterHotKey` global shortcuts: Ctrl+Shift+R record/stop, pause hotkey, conflict detection)
-- [ ] `tray.rs` (system tray icon with idle/recording/paused states, 1 s elapsed tooltip, menu: Record, Pause/Resume, Stop, Settings, Quit)
-- [ ] `overlay.rs` (borderless always-on-top `WS_EX_TOOLWINDOW` + `WDA_EXCLUDEFROMCAPTURE` windows: Setup bar, Recording bar, Countdown overlay, Area selection overlay, Camera bubble overlay)
-- [ ] `app_model.rs` (orchestrates capture + input + project store + library + exporter + preview engine + Tauri IPC commands & events)
-- [ ] Port upstream shell tests (`BarStyleTests`, `ShellCountdownTests`, `ShellLogicTests`, `ShellModelTests`, `RecorderFlowTests`)
-- [ ] Verify `./scripts/test.ps1` green, update `PLAN.md` & `progress.md`, commit Stage 8
+- [x] `settings.rs` (persisted `ShellSettings`: source, camera/mic devices, countdown, hotkeys, aspect, output dir, 8 recent background images, inspector open state; atomic JSON store; `SHGetKnownFolderPath(FOLDERID_Videos)` library root closing Stage 3 gap)
+- [x] `shell_model.rs` (`ShellPhase`, `ShellEvent`, `ShellStateMachine`, `ElapsedClock`, `BarPlacement`, `BubbleGeometry`, `AreaSelectionMath`)
+- [x] `win_shell.rs` (`RegisterHotKey` global shortcuts: Ctrl+Shift+R record/stop, Ctrl+Shift+P pause/resume with conflict detection; `SHOpenFolderAndSelectItems`; `WDA_EXCLUDEFROMCAPTURE` + `WS_EX_TOOLWINDOW`)
+- [x] `tray.rs` (system tray icon with 32x32 idle/recording/paused states, 1 s elapsed tooltip, menu: Record, Pause/Resume, Stop, Open Library, Settings, Quit)
+- [x] `overlay.rs` (borderless always-on-top `WS_EX_TOOLWINDOW` + `WDA_EXCLUDEFROMCAPTURE` HUD windows: Setup bar, Recording bar, Countdown, Area selection, Camera bubble + central `WindowRegistry`)
+- [x] `preview.rs` (`PreviewEngine` sharing `SpringMotionModel` + `Renderer` + `AssetFrameSource` with `Mp4Exporter`, timeline thumbnail extraction, `BackgroundRasterizer` swatches, Windows wallpaper discovery)
+- [x] `app_model.rs` (36 typed Tauri IPC commands + raw binary `ipc::Response` RGBA preview transport + async worker export streaming `nss://export-progress` + autosave flush on exit)
+- [x] Port shell tests (`shell_model`, `settings`, `tray`, `win_shell` unit tests + extended `--smoke-test`)
+- [x] Verify clippy, unit tests & `--smoke-test` green, update `PLAN.md` & `progress.md`, commit Stage 8
 
 ---
 

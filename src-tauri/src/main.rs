@@ -1,48 +1,27 @@
 //! notscreenstudio for Windows — application entry point.
 //!
-//! Replaces upstream `Sources/NotScreenStudio/App.swift`. This file owns the Tauri
-//! runtime and the command surface; everything with real behaviour lives in the
-//! `nss-*` crates (see `PLAN.md` Appendix A).
-//!
-//! Stage 0: the shell opens and proves the IPC bridge works. Capture, the
-//! compositor and the editor arrive in stages 4-9.
+//! Replaces upstream `Sources/NotScreenStudio/App.swift`. Wires the Tauri runtime, tray icon,
+//! global hotkeys, capture-excluded HUD windows, live wgpu preview engine, and IPC command surface.
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
-#![forbid(unsafe_code)]
+#![deny(unsafe_code)]
 
-use serde::Serialize;
+mod app_model;
+mod overlay;
+mod preview;
+mod settings;
+mod shell_model;
+mod tray;
+mod win_shell;
 
-/// The port stage currently implemented (tracked against `PLAN.md` §5).
-const PORT_STAGE: u32 = 0;
-
-#[derive(Debug, Serialize)]
-struct CoreInfo {
-    version: String,
-    platform: String,
-    stage: u32,
-}
-
-/// Trivial round-trip used by the UI to prove the bridge is alive.
-#[tauri::command]
-fn ping(message: String) -> String {
-    message
-}
-
-/// Reports which crates and which port stage this build contains.
-#[tauri::command]
-fn core_info() -> CoreInfo {
-    CoreInfo {
-        version: env!("CARGO_PKG_VERSION").to_owned(),
-        platform: std::env::consts::OS.to_owned(),
-        stage: PORT_STAGE,
-    }
-}
+use app_model::AppState;
+use tauri::{Manager, RunEvent};
 
 fn main() {
-    // The stage-0 smoke test exits before any window is created, so CI can build
-    // and link the whole graph without a display (upstream: `--smoke-test`).
+    // Headless smoke test (`--smoke-test`): exercises core, motion, project bundle I/O, and
+    // library listing without creating any GUI window, so CI builds can always verify the graph.
     if std::env::args().any(|a| a == "--smoke-test") {
-        match nss_project::smoke_test() {
+        match run_smoke_test() {
             Ok(summary) => {
                 println!("smoke-test OK: {summary}");
                 return;
@@ -54,8 +33,103 @@ fn main() {
         }
     }
 
-    tauri::Builder::default()
-        .invoke_handler(tauri::generate_handler![ping, core_info])
-        .run(tauri::generate_context!())
-        .expect("failed to start the notscreenstudio shell");
+    let state = AppState::new();
+
+    let app = tauri::Builder::default()
+        .manage(state)
+        .setup(|app| {
+            let handle = app.handle().clone();
+            let app_state = handle.state::<AppState>();
+            if let Some(main_win) = handle.get_webview_window("main") {
+                // ADR 0007: exclude the main app window from capture so recordings of the display
+                // never include the recorder's own UI.
+                app_state.windows.register_window(&main_win, false);
+            }
+            let _ = tray::setup_tray(&handle);
+            app_state.install_hotkeys(handle.clone());
+            Ok(())
+        })
+        .invoke_handler(tauri::generate_handler![
+            app_model::ping,
+            app_model::core_info,
+            app_model::get_shell_snapshot,
+            app_model::get_settings,
+            app_model::save_settings,
+            app_model::list_capture_sources,
+            app_model::list_devices,
+            app_model::get_permissions,
+            app_model::request_borderless_access,
+            app_model::check_ffmpeg,
+            app_model::list_projects,
+            app_model::get_project_thumbnail,
+            app_model::rename_project,
+            app_model::delete_project,
+            app_model::reveal_path,
+            app_model::create_demo_project,
+            app_model::start_recording,
+            app_model::cancel_countdown,
+            app_model::pause_recording,
+            app_model::resume_recording,
+            app_model::stop_recording,
+            app_model::discard_recording,
+            app_model::dismiss_error,
+            app_model::open_overlay,
+            app_model::close_overlay,
+            app_model::close_all_overlays,
+            app_model::select_area_rect,
+            app_model::open_editor_project,
+            app_model::update_editor_project,
+            app_model::plan_auto_zooms,
+            app_model::render_preview_frame,
+            app_model::get_timeline_thumbnails,
+            app_model::list_background_presets,
+            app_model::list_system_wallpapers,
+            app_model::render_background_preview,
+            app_model::start_export,
+            app_model::cancel_export,
+        ])
+        .build(tauri::generate_context!())
+        .expect("failed to build the notscreenstudio shell");
+
+    app.run(|handle, event| {
+        if let RunEvent::Exit = event {
+            handle.state::<AppState>().shutdown();
+        }
+    });
+}
+
+fn run_smoke_test() -> Result<String, String> {
+    let base = nss_project::smoke_test()?;
+    // Also verify motion planning + CPU passthrough renderer + shell state machine.
+    let mut track = nss_core::CursorTrack::default();
+    track.clicks.push(nss_core::ClickEvent::new(
+        0.5,
+        0.5,
+        0.5,
+        nss_core::MouseButton::Left,
+        nss_core::ClickKind::Down,
+    ));
+    let zooms = nss_motion::ZoomPlanner::auto_zoom_blocks(
+        &track,
+        3.0,
+        16.0 / 9.0,
+        &[],
+        &nss_motion::MotionTuning::default(),
+    );
+    if zooms.is_empty() {
+        return Err("ZoomPlanner produced no zoom block for a valid click".into());
+    }
+    let frame = nss_render::FrameRenderer::render(
+        &mut nss_render::PassthroughRenderer::new(),
+        &nss_render::Image::filled(32, 18, nss_core::RGBAColor::WHITE),
+        None,
+        &nss_core::FrameState::new(0.0),
+        &nss_core::Style::default(),
+        nss_core::PixelSize::new(64, 36),
+    )
+    .map_err(|e| e.to_string())?;
+    if frame.width != 64 || frame.height != 36 {
+        return Err("PassthroughRenderer returned wrong dimensions".into());
+    }
+    Ok(format!("{base} + motion + render + shell"))
 }

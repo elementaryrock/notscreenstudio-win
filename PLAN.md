@@ -2,7 +2,7 @@
 
 Port of [`dotslashsimran/notscreenstudio`](https://github.com/dotslashsimran/notscreenstudio) (macOS 15, Swift 6 + SwiftUI + Metal, ~14.5k lines across 8 modules plus 499 tests) to a native-feeling Windows desktop app.
 
-Status: **plan, Stages 0-7 complete.** Upstream is vendored read-only at `_upstream/` for reference.
+Status: **plan, Stages 0-8 complete.** Upstream is vendored read-only at `_upstream/` for reference.
 
 | Stage | Status |
 |---|---|
@@ -14,8 +14,9 @@ Status: **plan, Stages 0-7 complete.** Upstream is vendored read-only at `_upstr
 | 5 — `nss-capture` | **done** |
 | 6 — `nss-input` | **done** |
 | 7 — `nss-export` | **done** |
-| 8 — Shell (tray, HUD, hotkeys, overlays) | next |
-| 9-10 | not started |
+| 8 — Shell (tray, HUD, hotkeys, overlays) | **done** |
+| 9 — UI (Home + Editor + Overlays) | next |
+| 10 — Integration, parity, packaging | not started |
 
 When a stage lands, flip its row and keep the notes in that stage's section accurate.
 
@@ -311,6 +312,8 @@ Four deviations, all deliberate:
 - Settings persistence (source, devices, countdown, hotkeys, aspect, output dir).
 
 **Exit:** upstream `BarStyleTests`, `ShellCountdownTests`, `ShellLogicTests`, `ShellModelTests`, `RecorderFlowTests` behaviours reproduced; a manual pass shows the HUD never appears in a recording of itself.
+
+**Status: done** (`src-tauri`, 10 shell unit tests + extended `--smoke-test`). Implemented: `win_shell.rs` (confined `unsafe` per ADR 0012: `SHGetKnownFolderPath(FOLDERID_Videos)`, `SHOpenFolderAndSelectItems`, `WDA_EXCLUDEFROMCAPTURE`, `WS_EX_TOOLWINDOW`, `RegisterHotKey` with conflict reporting), `settings.rs` (`ShellSettings` + atomic JSON store), `shell_model.rs` (`ShellStateMachine`, `ElapsedClock`, `BarPlacement`, `BubbleGeometry`, `AreaSelectionMath`), `tray.rs` (pre-rendered 32x32 idle/recording/paused icons + 1 s tooltip + menu), `overlay.rs` (borderless always-on-top HUD windows + central HWND exclusion registry), `preview.rs` (GPU `PreviewEngine` sharing `SpringMotionModel` + `Renderer` + `AssetFrameSource` with `Mp4Exporter`, plus CPU background swatch rasterizer & Windows wallpaper discovery), and `app_model.rs` (36 typed Tauri IPC commands incl. raw binary `ipc::Response` RGBA frames).
 
 ### Stage 9 — UI: home + editor (React)
 - **Home**: responsive grid, cards with thumbnail/name/date/duration, newest first, context menu (Rename / Show in Explorer / Delete to Recycle Bin), empty state with a Record button.

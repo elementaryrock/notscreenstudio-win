@@ -14,15 +14,32 @@ path = "src/main.rs"
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
-tauri = { version = "2", features = [] }
+tauri = { version = "2", features = ["tray-icon"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
 anyhow = { workspace = true }
 thiserror = { workspace = true }
+parking_lot = { workspace = true }
+uuid = { workspace = true }
 
 nss-core = { workspace = true }
 nss-motion = { workspace = true }
 nss-project = { workspace = true }
+nss-render = { workspace = true }
+nss-capture = { workspace = true }
+nss-input = { workspace = true }
+nss-export = { workspace = true }
 
-# Stage 4-7 add: nss-render, nss-capture, nss-input, nss-export.
-# Stage 8 adds: tauri features ["tray-icon"], windows (Win32 HUD + hotkeys).
+[target.'cfg(windows)'.dependencies]
+windows = { workspace = true, features = [
+    "Win32_Foundation",
+    "Win32_System_Com",
+    "Win32_System_Threading",
+    "Win32_UI_Input_KeyboardAndMouse",
+    "Win32_UI_Shell",
+    "Win32_UI_Shell_Common",
+    "Win32_UI_WindowsAndMessaging",
+] }
+
+[dev-dependencies]
+tempfile = { workspace = true }
