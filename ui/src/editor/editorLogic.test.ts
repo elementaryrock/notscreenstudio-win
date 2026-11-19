@@ -87,8 +87,8 @@ test("editing an auto block converts it to manual and clamps scale/focus/ease", 
   const lowScaled = setZoomScale("AUTO1", 0.2, scaled);
   assert.equal(lowScaled[0]!.scale, ZOOM_MIN_SCALE);
 
-  const focused = setZoomFocus("AUTO1", { manual: { _0: { x: 1.5, y: -0.2 } } }, lowScaled);
-  assert.deepEqual(focused[0]!.focus, { manual: { _0: { x: 1, y: 0 } } });
+  const focused = setZoomFocus("AUTO1", { manual: { x: 1.5, y: -0.2 } }, lowScaled);
+  assert.deepEqual(focused[0]!.focus, { manual: { x: 1, y: 0 } });
 
   const eased = setZoomEase("AUTO1", 5.0, 0.01, focused);
   assert.equal(eased[0]!.easeIn, 2.0);
@@ -161,12 +161,12 @@ test("UndoHistory coalesces slider drags into one undo step", () => {
 });
 
 test("outputPixelSize and RGBA color helpers match upstream export presets", () => {
-  assert.deepEqual(outputPixelSize("1080p", "16:9"), { width: 1920, height: 1080 });
-  assert.deepEqual(outputPixelSize("1080p", "1:1"), { width: 1080, height: 1080 });
-  assert.deepEqual(outputPixelSize("1080p", "9:16"), { width: 1080, height: 1920 });
-  assert.deepEqual(outputPixelSize("4k", "16:9"), { width: 3840, height: 2160 });
-  assert.deepEqual(outputPixelSize("4k", "1:1"), { width: 2160, height: 2160 });
-  assert.deepEqual(outputPixelSize("4k", "9:16"), { width: 2160, height: 3840 });
+  assert.deepEqual(outputPixelSize("p1080", "r16x9"), { width: 1920, height: 1080 });
+  assert.deepEqual(outputPixelSize("p1080", "r1x1"), { width: 1080, height: 1080 });
+  assert.deepEqual(outputPixelSize("p1080", "r9x16"), { width: 1080, height: 1920 });
+  assert.deepEqual(outputPixelSize("p2160", "r16x9"), { width: 3840, height: 2160 });
+  assert.deepEqual(outputPixelSize("p2160", "r1x1"), { width: 2160, height: 2160 });
+  assert.deepEqual(outputPixelSize("p2160", "r9x16"), { width: 2160, height: 3840 });
 
   const rgba = hexToRgba("#0a84ff", 0.5);
   assert.equal(rgbaToHex(rgba), "#0a84ff");

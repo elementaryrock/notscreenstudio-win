@@ -1225,6 +1225,10 @@ button:disabled {
   gap: 3px;
 }
 
+.slider-row.disabled {
+  opacity: 0.42;
+}
+
 .slider-head {
   display: flex;
   justify-content: space-between;

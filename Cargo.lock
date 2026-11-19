@@ -2317,8 +2317,12 @@ dependencies = [
 name = "nss-export"
 version = "0.1.0"
 dependencies = [
+ "image",
+ "nss-capture",
  "nss-core",
+ "nss-input",
  "nss-motion",
+ "nss-project",
  "nss-render",
  "parking_lot",
  "serde",

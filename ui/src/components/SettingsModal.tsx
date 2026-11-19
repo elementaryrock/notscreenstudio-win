@@ -6,12 +6,13 @@ import {
   saveSettings,
 } from "../ipc";
 import { strings } from "../strings";
-import type {
-  AspectRatio,
-  FfmpegStatusDto,
-  PermissionsDto,
-  ShellSettings,
-  ShellSnapshot,
+import {
+  aspectLabel,
+  type AspectRatio,
+  type FfmpegStatusDto,
+  type PermissionsDto,
+  type ShellSettings,
+  type ShellSnapshot,
 } from "../types";
 
 interface SettingsModalProps {
@@ -139,14 +140,14 @@ export function SettingsModal({
           <div className="form-row">
             <label>Default Aspect Ratio</label>
             <div className="pill-group">
-              {(["16:9", "1:1", "9:16"] as AspectRatio[]).map((ar) => (
+              {(["r16x9", "r1x1", "r9x16"] as AspectRatio[]).map((ar) => (
                 <button
                   key={ar}
                   type="button"
                   className={draft.defaultAspect === ar ? "active" : ""}
                   onClick={() => setDraft({ ...draft, defaultAspect: ar })}
                 >
-                  {ar}
+                  {aspectLabel(ar)}
                 </button>
               ))}
             </div>

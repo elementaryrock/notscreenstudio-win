@@ -111,7 +111,7 @@ export function PreviewCanvas({
   }, [currentTime, projectRevision, stageSize.w, stageSize.h, pumpRender]);
 
   const manualFocus =
-    selectedZoom && "manual" in selectedZoom.focus ? selectedZoom.focus.manual._0 : null;
+    selectedZoom && "manual" in selectedZoom.focus ? selectedZoom.focus.manual : null;
 
   const clientToNormalized = (clientX: number, clientY: number): NormalizedPoint | null => {
     const canvas = canvasRef.current;

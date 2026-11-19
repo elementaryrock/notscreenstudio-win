@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { getTimelineThumbnails } from "../ipc";
 import {
+  addZoomBlock,
   moveZoomBlock,
   resizeZoomBlock,
   resolvedTrimEnd,
@@ -256,8 +257,19 @@ export function TimelinePanel({
             </div>
           </div>
 
-          {/* Zoom Track + Click dots */}
-          <div className="timeline-lane lane-zoom">
+          {/* Zoom Track + Click dots (double-click empty track to add a 2x zoom block) */}
+          <div
+            className="timeline-lane lane-zoom"
+            onDoubleClick={(e) => {
+              const t = clientXToTime(e.clientX);
+              const res = addZoomBlock(t, project.timeline.zoomBlocks, safeDuration);
+              if (!res) return;
+              onBeginDrag();
+              onUpdateTimeline({ ...project.timeline, zoomBlocks: res.blocks });
+              onEndDrag();
+              onSelectZoom(res.id);
+            }}
+          >
             {project.timeline.zoomBlocks.map((b) => {
               const selected = b.id === selectedZoomId;
               const leftPct = (b.start / safeDuration) * 100;

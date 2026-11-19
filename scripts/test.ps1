@@ -1,4 +1,4 @@
-﻿param([switch]$Fast)
+param([switch]$Fast)
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
@@ -9,7 +9,7 @@ $ErrorActionPreference = "Stop"
 
 .DESCRIPTION
   This is exactly what CI runs (see .github/workflows/ci.yml). If it passes here
-  it passes there — keep the two in sync.
+  it passes there -- keep the two in sync.
 
   Usage:
     ./scripts/test.ps1            # everything

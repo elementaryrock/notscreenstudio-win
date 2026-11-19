@@ -16,14 +16,15 @@ import {
   type UndoState,
 } from "../editor/editorLogic";
 import { strings } from "../strings";
-import type {
-  AspectRatio,
-  CursorTrack,
-  NormalizedPoint,
-  Project,
-  ProjectReference,
-  ShellSettings,
-  Timeline,
+import {
+  aspectLabel,
+  type AspectRatio,
+  type CursorTrack,
+  type NormalizedPoint,
+  type Project,
+  type ProjectReference,
+  type ShellSettings,
+  type Timeline,
 } from "../types";
 import { ExportModal } from "./ExportModal";
 import { InspectorPanel } from "./InspectorPanel";
@@ -319,7 +320,7 @@ export function EditorView({
         ...project.timeline,
         zoomBlocks: setZoomFocus(
           selectedZoom.id,
-          { manual: { _0: point } },
+          { manual: point },
           project.timeline.zoomBlocks,
         ),
       },
@@ -353,7 +354,7 @@ export function EditorView({
 
         <div className="topbar-center">
           <div className="pill-group compact">
-            {(["16:9", "1:1", "9:16"] as AspectRatio[]).map((ar) => (
+            {(["r16x9", "r1x1", "r9x16"] as AspectRatio[]).map((ar) => (
               <button
                 key={ar}
                 type="button"
@@ -362,7 +363,7 @@ export function EditorView({
                   commitProject({ ...project, style: { ...project.style, aspectRatio: ar } })
                 }
               >
-                {ar}
+                {aspectLabel(ar)}
               </button>
             ))}
           </div>

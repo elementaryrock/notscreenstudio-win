@@ -70,7 +70,6 @@ export function InspectorPanel({
       setPresets(p);
       setWallpapers(wp);
 
-      // Render CPU swatches for gradient and mesh presets in parallel.
       const entries = [...p.gradients, ...p.meshes];
       const rendered = await Promise.all(
         entries.map(async (entry) => {
@@ -121,7 +120,7 @@ export function InspectorPanel({
   const applyImageBackground = (rawPath: string): void => {
     const trimmed = rawPath.trim();
     if (!trimmed) return;
-    updateStyle({ background: { image: { path: trimmed } } });
+    updateStyle({ background: { image: { file: trimmed } } });
     const recent = [
       trimmed,
       ...settings.recentBackgroundImages.filter((p) => p !== trimmed),
@@ -154,7 +153,7 @@ export function InspectorPanel({
       const nextBlocks = await planAutoZooms(project.timeline.zoomBlocks);
       onCommitProject({
         ...project,
-        timeline: { ...project.timeline, zoomBlocks: nextBlocks, autoZoomEnabled: true },
+        timeline: { ...project.timeline, zoomBlocks: nextBlocks, autoZoomEnabled: false },
       });
     } catch (e) {
       setZoomNotice(e instanceof Error ? e.message : String(e));
@@ -172,9 +171,9 @@ export function InspectorPanel({
   };
 
   const style = project.style;
-  const activeSolidHex =
-    "solid" in style.background ? rgbaToHex(style.background.solid._0) : "#1a1c24";
+  const activeSolidHex = "solid" in style.background ? rgbaToHex(style.background.solid) : "#1a1c24";
   const activeGradient = "gradient" in style.background ? style.background.gradient : null;
+  const isImageBackground = "image" in style.background || "systemWallpaper" in style.background;
 
   return (
     <aside className="inspector-panel">
@@ -280,7 +279,7 @@ export function InspectorPanel({
             <div className="swatch-grid solids">
               {presets.solids.map((entry) => {
                 const hex =
-                  "solid" in entry.background ? rgbaToHex(entry.background.solid._0) : "#222";
+                  "solid" in entry.background ? rgbaToHex(entry.background.solid) : "#222";
                 const selected = backgroundsEqual(style.background, entry.background);
                 return (
                   <button
@@ -300,7 +299,7 @@ export function InspectorPanel({
                 type="color"
                 value={activeSolidHex}
                 onChange={(e) =>
-                  updateStyle({ background: { solid: { _0: hexToRgba(e.target.value, 1) } } })
+                  updateStyle({ background: { solid: hexToRgba(e.target.value, 1) } })
                 }
               />
             </label>
@@ -347,9 +346,10 @@ export function InspectorPanel({
           label={strings.bgBlur}
           value={style.backgroundBlur}
           min={0}
-          max={40}
-          step={1}
-          display={`${Math.round(style.backgroundBlur)} px`}
+          max={1}
+          step={0.02}
+          disabled={!isImageBackground}
+          display={`${Math.round(style.backgroundBlur * 100)}%`}
           onBegin={onBeginDrag}
           onChange={(v) => updateStyle({ backgroundBlur: v }, true)}
           onEnd={onEndDrag}
@@ -366,9 +366,9 @@ export function InspectorPanel({
           label={strings.padding}
           value={style.padding}
           min={0}
-          max={160}
-          step={1}
-          display={`${Math.round(style.padding)} px`}
+          max={0.22}
+          step={0.005}
+          display={`${Math.round(style.padding * 100)}%`}
           onBegin={onBeginDrag}
           onChange={(v) => updateStyle({ padding: v }, true)}
           onEnd={onEndDrag}
@@ -377,36 +377,31 @@ export function InspectorPanel({
           label={strings.cornerRadius}
           value={style.cornerRadius}
           min={0}
-          max={48}
-          step={1}
-          display={`${Math.round(style.cornerRadius)} px`}
+          max={0.06}
+          step={0.002}
+          display={`${Math.round(style.cornerRadius * 1000)}‰`}
           onBegin={onBeginDrag}
           onChange={(v) => updateStyle({ cornerRadius: v }, true)}
           onEnd={onEndDrag}
         />
         <SliderRow
           label={strings.shadowOpacity}
-          value={style.shadow.color.a}
+          value={style.shadow.opacity}
           min={0}
           max={1}
           step={0.02}
-          display={`${Math.round(style.shadow.color.a * 100)}%`}
+          display={`${Math.round(style.shadow.opacity * 100)}%`}
           onBegin={onBeginDrag}
-          onChange={(v) =>
-            updateStyle(
-              { shadow: { ...style.shadow, color: { ...style.shadow.color, a: v } } },
-              true,
-            )
-          }
+          onChange={(v) => updateStyle({ shadow: { ...style.shadow, opacity: v } }, true)}
           onEnd={onEndDrag}
         />
         <SliderRow
           label={strings.shadowBlur}
           value={style.shadow.radius}
           min={0}
-          max={80}
-          step={1}
-          display={`${Math.round(style.shadow.radius)} px`}
+          max={0.1}
+          step={0.002}
+          display={`${Math.round(style.shadow.radius * 100)}%`}
           onBegin={onBeginDrag}
           onChange={(v) => updateStyle({ shadow: { ...style.shadow, radius: v } }, true)}
           onEnd={onEndDrag}
@@ -414,10 +409,10 @@ export function InspectorPanel({
         <SliderRow
           label={strings.shadowOffsetY}
           value={style.shadow.offsetY}
-          min={-20}
-          max={40}
-          step={1}
-          display={`${Math.round(style.shadow.offsetY)} px`}
+          min={-0.04}
+          max={0.06}
+          step={0.002}
+          display={`${Math.round(style.shadow.offsetY * 1000)}‰`}
           onBegin={onBeginDrag}
           onChange={(v) => updateStyle({ shadow: { ...style.shadow, offsetY: v } }, true)}
           onEnd={onEndDrag}
@@ -430,26 +425,27 @@ export function InspectorPanel({
         open={isSectionOpen("cursor", false)}
         onToggle={() => toggleSection("cursor", false)}
       >
-        <ToggleRow
-          label={strings.showCursor}
-          checked={style.cursor.visible}
-          onChange={(v) => updateStyle({ cursor: { ...style.cursor, visible: v } })}
-        />
         <SliderRow
           label={strings.cursorSize}
-          value={style.cursor.sizeMultiplier}
+          value={style.cursor.size}
           min={0.5}
           max={3.0}
           step={0.05}
-          display={`${style.cursor.sizeMultiplier.toFixed(2)}×`}
+          display={`${style.cursor.size.toFixed(2)}×`}
           onBegin={onBeginDrag}
-          onChange={(v) => updateStyle({ cursor: { ...style.cursor, sizeMultiplier: v } }, true)}
+          onChange={(v) => updateStyle({ cursor: { ...style.cursor, size: v } }, true)}
           onEnd={onEndDrag}
         />
-        <ToggleRow
+        <SliderRow
           label={strings.cursorSmoothing}
-          checked={style.cursor.smoothing}
-          onChange={(v) => updateStyle({ cursor: { ...style.cursor, smoothing: v } })}
+          value={style.cursor.smoothing}
+          min={0}
+          max={1}
+          step={0.05}
+          display={`${Math.round(style.cursor.smoothing * 100)}%`}
+          onBegin={onBeginDrag}
+          onChange={(v) => updateStyle({ cursor: { ...style.cursor, smoothing: v } }, true)}
+          onEnd={onEndDrag}
         />
         <SliderRow
           label={strings.motionBlur}
@@ -472,19 +468,6 @@ export function InspectorPanel({
           checked={style.cursor.hideWhenIdle}
           onChange={(v) => updateStyle({ cursor: { ...style.cursor, hideWhenIdle: v } })}
         />
-        {style.cursor.hideWhenIdle && (
-          <SliderRow
-            label={strings.idleDelay}
-            value={style.cursor.idleDelay}
-            min={0.5}
-            max={10}
-            step={0.5}
-            display={`${style.cursor.idleDelay.toFixed(1)} s`}
-            onBegin={onBeginDrag}
-            onChange={(v) => updateStyle({ cursor: { ...style.cursor, idleDelay: v } }, true)}
-            onEnd={onEndDrag}
-          />
-        )}
       </InspectorSection>
 
       {/* 4. Zoom */}
@@ -572,7 +555,7 @@ export function InspectorPanel({
                         ...project.timeline,
                         zoomBlocks: setZoomFocus(
                           selectedZoom.id,
-                          { manual: { _0: { x: 0.5, y: 0.5 } } },
+                          { manual: { x: 0.5, y: 0.5 } },
                           project.timeline.zoomBlocks,
                         ),
                       },
@@ -589,21 +572,22 @@ export function InspectorPanel({
                 <div className="muted-sm">{strings.clickPreviewToPick}</div>
                 <SliderRow
                   label="Focus X"
-                  value={selectedZoom.focus.manual._0.x}
+                  value={selectedZoom.focus.manual.x}
                   min={0}
                   max={1}
                   step={0.01}
-                  display={`${Math.round(selectedZoom.focus.manual._0.x * 100)}%`}
+                  display={`${Math.round(selectedZoom.focus.manual.x * 100)}%`}
                   onBegin={onBeginDrag}
                   onChange={(v) => {
-                    const pt = "manual" in selectedZoom.focus ? selectedZoom.focus.manual._0 : { x: 0.5, y: 0.5 };
+                    const pt =
+                      "manual" in selectedZoom.focus ? selectedZoom.focus.manual : { x: 0.5, y: 0.5 };
                     onDragProject({
                       ...project,
                       timeline: {
                         ...project.timeline,
                         zoomBlocks: setZoomFocus(
                           selectedZoom.id,
-                          { manual: { _0: { x: v, y: pt.y } } },
+                          { manual: { x: v, y: pt.y } },
                           project.timeline.zoomBlocks,
                         ),
                       },
@@ -613,21 +597,22 @@ export function InspectorPanel({
                 />
                 <SliderRow
                   label="Focus Y"
-                  value={selectedZoom.focus.manual._0.y}
+                  value={selectedZoom.focus.manual.y}
                   min={0}
                   max={1}
                   step={0.01}
-                  display={`${Math.round(selectedZoom.focus.manual._0.y * 100)}%`}
+                  display={`${Math.round(selectedZoom.focus.manual.y * 100)}%`}
                   onBegin={onBeginDrag}
                   onChange={(v) => {
-                    const pt = "manual" in selectedZoom.focus ? selectedZoom.focus.manual._0 : { x: 0.5, y: 0.5 };
+                    const pt =
+                      "manual" in selectedZoom.focus ? selectedZoom.focus.manual : { x: 0.5, y: 0.5 };
                     onDragProject({
                       ...project,
                       timeline: {
                         ...project.timeline,
                         zoomBlocks: setZoomFocus(
                           selectedZoom.id,
-                          { manual: { _0: { x: pt.x, y: v } } },
+                          { manual: { x: pt.x, y: v } },
                           project.timeline.zoomBlocks,
                         ),
                       },
@@ -733,6 +718,7 @@ export function InspectorPanel({
           min={0}
           max={1}
           step={0.05}
+          disabled={style.camera.shape === "circle"}
           display={`${Math.round(style.camera.roundness * 100)}%`}
           onBegin={onBeginDrag}
           onChange={(v) => updateStyle({ camera: { ...style.camera, roundness: v } }, true)}
@@ -753,9 +739,9 @@ export function InspectorPanel({
           label={strings.cameraBorder}
           value={style.camera.border?.width ?? 0}
           min={0}
-          max={12}
-          step={0.5}
-          display={`${(style.camera.border?.width ?? 0).toFixed(1)} px`}
+          max={0.02}
+          step={0.001}
+          display={`${Math.round((style.camera.border?.width ?? 0) * 1000)}‰`}
           onBegin={onBeginDrag}
           onChange={(v) =>
             updateStyle(
@@ -766,7 +752,7 @@ export function InspectorPanel({
                     v > 0
                       ? {
                           width: v,
-                          color: style.camera.border?.color ?? { r: 1, g: 1, b: 1, a: 0.9 },
+                          color: style.camera.border?.color ?? { r: 1, g: 1, b: 1, a: 1 },
                         }
                       : null,
                 },
@@ -787,7 +773,7 @@ export function InspectorPanel({
                   camera: {
                     ...style.camera,
                     border: {
-                      width: style.camera.border?.width ?? 2,
+                      width: style.camera.border?.width ?? 0.004,
                       color: hexToRgba(e.target.value, style.camera.border?.color.a ?? 1),
                     },
                   },
@@ -798,13 +784,19 @@ export function InspectorPanel({
         )}
         <ToggleRow
           label={strings.cameraMirror}
-          checked={style.camera.mirrored}
-          onChange={(v) => updateStyle({ camera: { ...style.camera, mirrored: v } })}
+          checked={style.camera.mirror}
+          onChange={(v) => updateStyle({ camera: { ...style.camera, mirror: v } })}
         />
-        <ToggleRow
+        <SliderRow
           label={strings.cameraShrinkOnZoom}
-          checked={style.camera.shrinkOnZoom}
-          onChange={(v) => updateStyle({ camera: { ...style.camera, shrinkOnZoom: v } })}
+          value={style.camera.zoomedScale}
+          min={0.3}
+          max={1.0}
+          step={0.05}
+          display={`${Math.round(style.camera.zoomedScale * 100)}%`}
+          onBegin={onBeginDrag}
+          onChange={(v) => updateStyle({ camera: { ...style.camera, zoomedScale: v } }, true)}
+          onEnd={onEndDrag}
         />
         <SliderRow
           label={strings.cameraPositionX}
@@ -884,6 +876,7 @@ function SliderRow({
   min,
   max,
   step,
+  disabled = false,
   display,
   onBegin,
   onChange,
@@ -894,13 +887,14 @@ function SliderRow({
   min: number;
   max: number;
   step: number;
+  disabled?: boolean;
   display: string;
   onBegin: () => void;
   onChange: (v: number) => void;
   onEnd: () => void;
 }): React.JSX.Element {
   return (
-    <div className="slider-row">
+    <div className={`slider-row ${disabled ? "disabled" : ""}`}>
       <div className="slider-head">
         <span>{label}</span>
         <span className="mono muted-sm">{display}</span>
@@ -910,6 +904,7 @@ function SliderRow({
         min={min}
         max={max}
         step={step}
+        disabled={disabled}
         value={value}
         onPointerDown={onBegin}
         onChange={(e) => onChange(parseFloat(e.target.value))}

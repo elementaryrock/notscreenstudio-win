@@ -13,7 +13,7 @@ export const ZOOM_MIN_SCALE = 1.1;
 export const ZOOM_MAX_SCALE = 4.0;
 export const ZOOM_MIN_EASE = 0.1;
 export const ZOOM_MAX_EASE = 2.0;
-export const ZOOM_DEFAULT_EASE = 0.35;
+export const ZOOM_DEFAULT_EASE = 0.75;
 export const TRIM_MIN_LENGTH = 0.5;
 
 function sortedBlocks(blocks: readonly ZoomBlock[]): ZoomBlock[] {
@@ -165,10 +165,8 @@ export function setZoomFocus(
     "manual" in focus
       ? {
           manual: {
-            _0: {
-              x: clamp(focus.manual._0.x, 0, 1),
-              y: clamp(focus.manual._0.y, 0, 1),
-            },
+            x: clamp(focus.manual.x, 0, 1),
+            y: clamp(focus.manual.y, 0, 1),
           },
         }
       : { auto: {} };

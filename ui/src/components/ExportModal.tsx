@@ -9,6 +9,7 @@ import {
 import { strings } from "../strings";
 import {
   outputPixelSize,
+  resolutionLabel,
   type ExportPreset,
   type ExportProgress,
   type ExportResolution,
@@ -31,7 +32,7 @@ export function ExportModal({
   defaultOutputDir,
   onClose,
 }: ExportModalProps): React.JSX.Element {
-  const [resolution, setResolution] = useState<ExportResolution>("1080p");
+  const [resolution, setResolution] = useState<ExportResolution>("p1080");
   const [fps, setFps] = useState<number>(60);
   const [codec, setCodec] = useState<VideoCodec>("h264");
   const [outputPath, setOutputPath] = useState<string>(() => {
@@ -101,7 +102,7 @@ export function ExportModal({
         <div className="form-row">
           <label>{strings.resolution}</label>
           <div className="pill-group">
-            {(["1080p", "4k"] as ExportResolution[]).map((res) => {
+            {(["p1080", "p2160"] as ExportResolution[]).map((res) => {
               const s = outputPixelSize(res, project.style.aspectRatio);
               return (
                 <button
@@ -111,7 +112,7 @@ export function ExportModal({
                   className={resolution === res ? "active" : ""}
                   onClick={() => setResolution(res)}
                 >
-                  {res.toUpperCase()} ({s.width}×{s.height})
+                  {resolutionLabel(res)} ({s.width}×{s.height})
                 </button>
               );
             })}

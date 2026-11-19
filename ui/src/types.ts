@@ -45,34 +45,31 @@ export interface MeshPoint {
 }
 
 export type Background =
-  | { solid: { _0: RGBAColor } }
+  | { solid: RGBAColor }
   | { gradient: { stops: GradientStop[]; angleDegrees: number } }
-  | { image: { path: string } }
+  | { image: { file: string } }
   | { mesh: { points: MeshPoint[]; warp: number } }
   | { wallpaper: { name: string } }
   | { systemWallpaper: { path: string } };
 
 export interface Shadow {
-  color: RGBAColor;
   radius: number;
+  opacity: number;
   offsetX: number;
   offsetY: number;
 }
 
-export type AspectRatio = "16:9" | "1:1" | "9:16";
-export type ExportResolution = "1080p" | "4k";
+export type AspectRatio = "r16x9" | "r1x1" | "r9x16";
+export type ExportResolution = "p1080" | "p2160";
 export type VideoCodec = "h264" | "hevc";
 export type CameraShape = "circle" | "square" | "tall" | "wide";
 
 export interface CursorStyle {
-  visible: boolean;
-  sizeMultiplier: number;
-  smoothing: boolean;
+  size: number;
+  smoothing: number;
   motionBlur: number;
   clickRipples: boolean;
-  rippleColor: RGBAColor;
   hideWhenIdle: boolean;
-  idleDelay: number;
 }
 
 export interface CameraBorder {
@@ -86,9 +83,9 @@ export interface CameraBubble {
   position: NormalizedPoint;
   size: number;
   border: CameraBorder | null;
-  mirrored: boolean;
+  mirror: boolean;
   roundness: number;
-  shrinkOnZoom: boolean;
+  zoomedScale: number;
 }
 
 export interface Style {
@@ -102,7 +99,7 @@ export interface Style {
   camera: CameraBubble;
 }
 
-export type ZoomFocus = { auto: Record<string, never> } | { manual: { _0: NormalizedPoint } };
+export type ZoomFocus = { auto: Record<string, never> } | { manual: NormalizedPoint };
 
 export interface ZoomBlock {
   id: string;
@@ -130,11 +127,12 @@ export interface RecordingAssets {
   screenFile: string;
   cameraFile: string | null;
   micFile: string | null;
-  cursorTrackFile: string;
+  cursorFile: string;
   sourcePixelSize: PixelSize;
   frameRate: number;
   duration: number;
   startHostTime: number;
+  thumbnailFile: string | null;
 }
 
 export interface Project {
@@ -190,7 +188,7 @@ export interface CursorTrack {
 export type CaptureSource =
   | { display: { id: number } }
   | { window: { id: number } }
-  | { area: { displayId: number; rect: Rect } };
+  | { area: { displayID: number; rect: Rect } };
 
 export interface CaptureDisplayInfo {
   id: number;
@@ -340,10 +338,20 @@ export type OverlayKind =
   | "areaSelection"
   | "cameraBubble";
 
+export function aspectLabel(aspect: AspectRatio): string {
+  if (aspect === "r16x9") return "16:9";
+  if (aspect === "r9x16") return "9:16";
+  return "1:1";
+}
+
+export function resolutionLabel(resolution: ExportResolution): string {
+  return resolution === "p2160" ? "4K" : "1080p";
+}
+
 export function outputPixelSize(resolution: ExportResolution, aspect: AspectRatio): PixelSize {
-  const shortSide = resolution === "4k" ? 2160 : 1080;
-  if (aspect === "16:9") return { width: Math.round((shortSide * 16) / 9), height: shortSide };
-  if (aspect === "9:16") return { width: shortSide, height: Math.round((shortSide * 16) / 9) };
+  const shortSide = resolution === "p2160" ? 2160 : 1080;
+  if (aspect === "r16x9") return { width: Math.round((shortSide * 16) / 9), height: shortSide };
+  if (aspect === "r9x16") return { width: shortSide, height: Math.round((shortSide * 16) / 9) };
   return { width: shortSide, height: shortSide };
 }
 

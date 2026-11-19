@@ -17,4 +17,8 @@ thiserror = { workspace = true }
 uuid = { workspace = true }
 
 [dev-dependencies]
+image = { version = "0.25", default-features = false, features = ["png"] }
+nss-capture = { workspace = true }
+nss-input = { workspace = true }
+nss-project = { workspace = true }
 tempfile = { workspace = true }
