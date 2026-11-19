@@ -18,15 +18,13 @@ dist/
 *.msi
 *.exe
 
-# Test artefacts
+# Test artefacts & logs
 /fixtures/out/
 /tmp/
+*.log
 
 # Editor / OS
 .vscode/
 .idea/
 .DS_Store
 Thumbs.db
-
-# Upstream reference checkout is vendored read-only (see PLAN.md §5 Stage 0)
-# It is deliberately committed so the port works offline.

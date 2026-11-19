@@ -1,68 +1,49 @@
-# Contributing worker rules
+# Contributing
 
-Ported from upstream `AGENTS.md`. These are hard rules, not preferences. Every stage in
-`PLAN.md` §5 is written to respect them.
+These engineering rules keep the Windows codebase deterministic, private, and maintainable.
 
-## Language and platform
+## Language and Platform
 
-- Rust 2021, pinned to the MSVC toolchain by `rust-toolchain.toml`. Windows 10 2004+ is the
-  floor (ADR 0004).
-- UI is React 19 + TypeScript (strict, `noUncheckedIndexedAccess`, `exactOptionalPropertyTypes`).
-- No third-party dependency without an ADR in `docs/ADR/`.
+- Rust 2021, pinned to the MSVC toolchain by `rust-toolchain.toml`. Minimum OS target is Windows 10 2004 (build 19041).
+- UI is React 19 + TypeScript (`strict`, `noUncheckedIndexedAccess`, `exactOptionalPropertyTypes`).
+- Keep dependencies minimal and strictly offline.
 
 ## Toolchain
 
-- No build step that needs a GUI session. `--smoke-test` must always work headless.
-- Shaders live in `shaders/*.wgsl` and are embedded with `include_str!`. Never generated at
-  runtime.
-- FFmpeg is the only external binary (ADR 0002).
-- **PowerShell scripts stay ASCII-only.** Windows PowerShell 5.1 reads a BOM-less `.ps1` as
-  ANSI, so a stray em dash corrupts the parse. Use `-` and `->`, not typographic characters.
+- No build step may require an interactive GUI session. `--smoke-test` must always work headless.
+- WGSL shaders live in `crates/nss-render/src/` (`shader.wgsl`, `blur.wgsl`) and are embedded with `include_str!`.
+- FFmpeg (`ffmpeg.exe` / `ffprobe.exe`) is the only external runtime binary.
+- **PowerShell scripts stay pure ASCII without UTF-8 BOM.** Windows PowerShell 5.1 parses BOM-less `.ps1` files as ANSI, so non-ASCII punctuation breaks parsing.
 
-## Crate boundaries
+## Crate Boundaries & Unsafe Confinement
 
-- `nss-core` and `nss-motion` are **platform-neutral**. Adding `windows`, `wgpu`, `tauri` or
-  any I/O backend to them is a review rejection. Their tests must pass on any host.
-- `nss-capture`, `nss-input` are the only crates allowed to call Win32/WinRT input and
-  capture APIs.
-- `nss-render` owns the GPU device and the shaders. Nothing else creates a `wgpu::Device`.
-- `nss-project` owns the filesystem layout of a project bundle. Nothing else writes
-  `project.json` or `cursor.json`.
-- `src-tauri` owns windows, tray, hotkeys and IPC commands. It must not contain motion or
-  rendering maths.
+- `nss-core` and `nss-motion` are **platform-neutral** (`#![forbid(unsafe_code)]`) and must never depend on `windows`, `wgpu`, `tauri`, or any I/O backend.
+- `unsafe` is strictly confined to the four audited Windows FFI paths enforced by CI:
+  - `crates/nss-project/src/windows_trash.rs`
+  - `crates/nss-capture/src/win/`
+  - `crates/nss-input/src/win/`
+  - `src-tauri/src/win_shell.rs`
+- `nss-render` owns the `wgpu::Device` and shaders.
+- `nss-project` owns `.nssproj` bundle persistence (`project.json`, `cursor.json`, atomic save/backup).
+- `src-tauri` owns Tauri windows, tray, hotkeys, and async IPC commands. Keep blocking, COM/WinRT, GPU, and FFmpeg work off the WebView2 STA UI thread.
 
 ## Contracts
 
 - Times are `f64` seconds from the first screen frame (`MediaTime`).
-- Positions are normalised `0...1`, origin top-left.
-- Motion is a pure function of time: deterministic, no wall-clock state, no call-order
-  dependence. Preview and export share one implementation.
-- Every persisted field decodes with a default, so an older `project.json` still loads.
-  On-disk JSON key names match upstream exactly.
+- Positions are normalised `0..=1`, origin top-left.
+- Motion is a pure, deterministic function of time shared identically by live preview and MP4 export.
+- Every persisted `project.json` field decodes with a backward-compatible default and keeps wire compatibility with upstream macOS `.nssproj` bundles.
 
-## Tests
+## Tests & Verification
 
-- Rust's built-in test harness. One module per ported Swift test file, named the same, so
-  coverage can be diffed against upstream.
-- Tests needing a GPU, capture device, camera or microphone must skip cleanly when
-  unavailable (`#[ignore]` with a `gpu` / `device` prefix, or an early return logged once).
-  CI stays green without hardware.
-- Property tests (`proptest`) for the invariants listed in `PLAN.md` Appendix B.
-
-## Performance
-
-- The preview holds 60 fps at 1080p; 4K export under the frame budget in the benchmark.
-- No per-frame allocation in the render path. No `Vec` growth inside the frame loop.
-- Keep the UI thread free: rendering, capture, encoding and decoding all run off it.
+- Run `./scripts/test.ps1` locally before opening a PR; CI runs the exact same checks:
+  - `cargo fmt --all -- --check`
+  - `cargo clippy --workspace --all-targets -- -D warnings`
+  - `cargo test --workspace`
+  - `npm --prefix ui run typecheck`, `test`, and `build`
+  - `notscreenstudio --smoke-test`
+- Hardware-dependent tests (live WGC capture, live mouse hook) use `#[ignore = "device: ..."]` so headless CI stays green.
 
 ## Privacy
 
-- Nothing leaves the machine. No networking APIs, analytics, crash reporters or update
-  pingers. CI has a job that fails the build if a network crate is added to our manifests.
-
-## Pull requests
-
-- Every PR passes `./scripts/test.ps1` locally before pushing; CI runs the same steps.
-- Keep PRs focused. State which stage of `PLAN.md` the PR advances and what was tested.
-- Changes to `nss-core` must be small and additive, and listed under "Contract changes" in
-  the description.
+- Nothing leaves the machine. No networking crates, analytics, telemetry, crash reporters, or update pingers. CI fails if any network crate is added to workspace `Cargo.toml` manifests.

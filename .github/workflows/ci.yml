@@ -63,7 +63,7 @@ jobs:
       - name: Smoke test
         run: cargo run -p notscreenstudio-win-app --bin notscreenstudio -- --smoke-test
 
-  # ADR 0010 & ADR 0012: `unsafe` is confined strictly to the audited Windows FFI adapters
+  # `unsafe` is confined strictly to the four audited Windows FFI adapters
   # (windows_trash.rs, nss-capture/src/win/, nss-input/src/win/, src-tauri/src/win_shell.rs).
   # Every other crate/module forbids or denies unsafe.
   unsafe:
@@ -82,25 +82,25 @@ jobs:
             | grep -vE '^[^:]*:[0-9]+:[[:space:]]*//' \
             | grep -v 'unsafe-thumb' || true)
           if [ -n "$violations" ]; then
-            echo "::error::unsafe code outside audited FFI modules (see ADR 0010 & ADR 0012):"
+            echo "::error::unsafe code outside audited FFI modules (see CONTRIBUTING.md):"
             echo "$violations"
             exit 1
           fi
           echo "Unsafe code is confined to audited Windows FFI modules."
 
-  # PLAN.md §7.6: nothing may leave the machine. Fail the build if a network stack appears.
+  # Privacy guarantee: nothing may leave the machine. Fail the build if a network stack appears.
   privacy:
     name: No network dependencies
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Check Cargo.lock for network crates
+      - name: Check Cargo.toml manifests for network crates
         run: |
           banned='^(reqwest|hyper|hyper-util|ureq|isahc|curl|curl-sys|surf|attohttpc|tiny_http|async-h1|aws-sdk-.*|opentelemetry.*|sentry.*|segment.*|mixpanel.*)$'
           # tauri itself links HTTP for its own updater plumbing on some platforms; we
           # ban them from OUR crates' manifests, which is where a mistake would appear.
           if grep -REn --include=Cargo.toml "(${banned#^})" crates/ src-tauri/; then
-            echo "::error::A direct dependency on a network stack was added. See PLAN.md §7.6."
+            echo "::error::A direct dependency on a network stack was added (see CONTRIBUTING.md)."
             exit 1
           fi
           echo "No direct network dependencies in workspace manifests."

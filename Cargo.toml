@@ -15,14 +15,14 @@ members = [
 version = "0.1.0"
 edition = "2021"
 # 1.86 is where f64::next_up/next_down stabilised; the viewport clamp needs them to
-# land the camera exactly on the source edge (see docs/ADR/0009-core-traits.md).
+# land the camera exactly on the source edge.
 rust-version = "1.86"
 license = "MIT"
-repository = "https://github.com/dotslashsimran/notscreenstudio"
-authors = ["notscreenstudio-win contributors"]
+repository = "https://github.com/elementaryrock/notscreenstudio-win"
+authors = ["elementaryrock (Maanas MS)"]
 
 [workspace.dependencies]
-# Pure, platform-neutral crates (see PLAN.md §3: these must not link windows/wgpu/tauri).
+# Pure, platform-neutral crates: these must not link windows/wgpu/tauri.
 nss-core = { path = "crates/nss-core" }
 nss-motion = { path = "crates/nss-motion" }
 nss-project = { path = "crates/nss-project" }

@@ -51,6 +51,6 @@
     "shortDescription": "Free screen recorder with auto-zoom, in the style of Screen Studio.",
     "longDescription": "Record a display, a window or an area, then polish the video with auto-zoom on clicks, a smoothed cursor with motion blur, click ripples, backgrounds with rounded corners and shadows, and a camera bubble. Everything stays on your machine: no accounts, no network calls, no telemetry.",
     "category": "Video",
-    "copyright": "MIT licensed"
+    "copyright": "Copyright (c) 2026 elementaryrock (Maanas MS), based on notscreenstudio by dotslashsimran (MIT)"
   }
 }

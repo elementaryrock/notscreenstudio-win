@@ -6,9 +6,8 @@ $ErrorActionPreference = "Stop"
   Builds the release MSI + NSIS installers and runs the non-interactive smoke test.
 
 .DESCRIPTION
-  Port of upstream's scripts/bundle.sh. Order matters: the smoke test runs the
-  freshly built binary before we spend time producing installers, so a broken
-  dependency graph fails in seconds instead of minutes.
+  Builds the UI bundle first, compiles the release binary, runs `--smoke-test`
+  on the freshly built binary, and then packages Windows MSI / NSIS installers.
 
   Environment:
     NSS_SKIP_SMOKE=1   skip the smoke test (e.g. a machine with no GUI session)
@@ -17,6 +16,16 @@ $ErrorActionPreference = "Stop"
 
 $root = Split-Path -Parent $PSScriptRoot
 Set-Location $root
+
+if (-not (Test-Path "ui/node_modules")) {
+    Write-Host "==> Installing UI dependencies" -ForegroundColor Cyan
+    npm --prefix ui install
+    if ($LASTEXITCODE -ne 0) { throw "npm install failed" }
+}
+
+Write-Host "==> Building UI bundle" -ForegroundColor Cyan
+npm --prefix ui run build
+if ($LASTEXITCODE -ne 0) { throw "ui build failed" }
 
 Write-Host "==> Building release binaries" -ForegroundColor Cyan
 cargo build --release -p notscreenstudio-win-app
@@ -27,16 +36,10 @@ if (-not (Test-Path $exe)) { throw "expected binary not found: $exe" }
 
 if ($env:NSS_SKIP_SMOKE -ne "1") {
     Write-Host "==> Smoke test" -ForegroundColor Cyan
-    & $exe --smoke-test
-    if ($LASTEXITCODE -ne 0) { throw "smoke test failed" }
+    $smoke = Start-Process -FilePath $exe -ArgumentList "--smoke-test" -Wait -PassThru
+    if ($smoke.ExitCode -ne 0) { throw "smoke test failed (exit code $($smoke.ExitCode))" }
 } else {
     Write-Host "==> Smoke test skipped (NSS_SKIP_SMOKE=1)" -ForegroundColor Yellow
-}
-
-if (-not (Test-Path "ui/node_modules")) {
-    Write-Host "==> Installing UI dependencies" -ForegroundColor Cyan
-    npm --prefix ui install
-    if ($LASTEXITCODE -ne 0) { throw "npm install failed" }
 }
 
 Write-Host "==> Bundling installers" -ForegroundColor Cyan
