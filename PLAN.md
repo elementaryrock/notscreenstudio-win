@@ -2,7 +2,7 @@
 
 Port of [`dotslashsimran/notscreenstudio`](https://github.com/dotslashsimran/notscreenstudio) (macOS 15, Swift 6 + SwiftUI + Metal, ~14.5k lines across 8 modules plus 499 tests) to a native-feeling Windows desktop app.
 
-Status: **plan, Stages 0-5 complete.** Upstream is vendored read-only at `_upstream/` for reference.
+Status: **plan, Stages 0-6 complete.** Upstream is vendored read-only at `_upstream/` for reference.
 
 | Stage | Status |
 |---|---|
@@ -12,8 +12,9 @@ Status: **plan, Stages 0-5 complete.** Upstream is vendored read-only at `_upstr
 | 3 — `nss-project` | **done** |
 | 4 — `nss-render` | **done** |
 | 5 — `nss-capture` | **done** |
-| 6 — `nss-input` | next |
-| 7-10 | not started |
+| 6 — `nss-input` | **done** |
+| 7 — `nss-export` | next |
+| 8-10 | not started |
 
 When a stage lands, flip its row and keep the notes in that stage's section accurate.
 
@@ -284,6 +285,8 @@ Four deviations, all deliberate:
 - Admin-elevated foreground apps, secure desktop (UAC) and full-screen exclusive games are not observable by a low-level hook — log as a known limitation, don't crash.
 
 **Exit:** upstream `NSSInputTests` + `CursorShapeTests` + `CursorMappingTests` + `StoredZoomTests` behaviours reproduced; a live test shows ≥ 110 Hz effective sampling with < 2 % dropped samples while the UI is busy.
+
+**Status: done** (`crates/nss-input`, 21 tests: 20 unit incl. real 120 Hz multimedia-timer thread verification + 1 live desktop test). Ported: `geometry.rs`, `schedule.rs`, `shapes.rs` (16x16 fingerprint + SHA-256 bitmap hash + `IDC_*` handle map), `hook.rs` (`WH_MOUSE_LL`), `recorder.rs` (`CursorRecorder`, `NoopInputLogger`, `SystemInputLogger`), and confined `unsafe` Win32 adapters under `src/win/`. Shared process monotonic clock lifted into `nss_core::host_now()` so capture and input always share one origin.
 
 ### Stage 7 — `nss-export` (replaces `NSSExport`)
 - `FrameSource` (`AssetFrameSource`): sequential decode, **at-or-before** frame selection for both screen and camera (the shared rule that makes preview and export agree); camera returns `None` when there is no camera track.

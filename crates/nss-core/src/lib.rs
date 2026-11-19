@@ -32,8 +32,8 @@ pub mod style;
 pub mod timeline;
 
 pub use basics::{
-    MediaTime, NormalizedPoint, NormalizedSize, PixelSize, Point2, RGBAColor, Rect, Size2,
-    Timestamp,
+    host_now, MediaTime, NormalizedPoint, NormalizedSize, PixelSize, Point2, RGBAColor, Rect,
+    Size2, Timestamp,
 };
 pub use cursor::{
     ClickEvent, ClickKind, CursorSample, CursorShape, CursorShapeChange, CursorTrack, MouseButton,

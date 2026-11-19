@@ -97,15 +97,15 @@ See [PLAN.md](./PLAN.md) for architecture, milestones, and invariants, and [CONT
 
 ---
 
-## Stage 6 — `nss-input` (NOT STARTED)
+## Stage 6 — `nss-input` (DONE)
 
-- [ ] `geometry.rs` (`SourceGeometry`: virtual-desktop coords -> normalised `0..1` source space, mixed-DPI, negative multi-monitor coords, area crop support)
-- [ ] `schedule.rs` (`SamplingSchedule`: 120 Hz sampling, monotonic clock alignment with `startHostTime`, rebase to `t = 0`, drop/clamp pre-origin)
-- [ ] `shapes.rs` (`CursorShape` classifier: `LoadCursorW(IDC_*)` handle match -> `GetIconInfoEx` bitmap hash fingerprint table -> `Arrow` fallback, 30 Hz low-priority polling)
-- [ ] `hook.rs` (`WH_MOUSE_LL` low-level mouse hook on dedicated message-loop thread + lock-free/ring-buffered event queue + `GetCursorPos` 120 Hz sampler)
-- [ ] `recorder.rs` (`CursorRecorder`, `SystemInputLogger`, `NoopInputLogger` implementing `nss_core::InputLogger`)
-- [ ] Port upstream tests (`NSSInputTests`, `CursorShapeTests`, `CursorMappingTests`)
-- [ ] Verify `./scripts/test.ps1` green, update `PLAN.md` & `progress.md`, commit Stage 6
+- [x] `geometry.rs` (`SourceGeometry`: virtual-desktop coords -> normalised `0..1` source space, mixed-DPI, negative multi-monitor coords, area crop support)
+- [x] `schedule.rs` (`SamplingSchedule`, `SamplingStats`: 120 Hz sampling, monotonic clock alignment via shared `nss_core::host_now()`, rebase to `t = 0`, drop/clamp pre-origin)
+- [x] `shapes.rs` (`CursorFingerprint`, `bitmap_hash`, `CursorShapeIdentifier`: `LoadCursorW(IDC_*)` handle match -> SHA-256 hash + 16x16 fingerprint -> `Unknown`/`Arrow` fallback, 30 Hz polling)
+- [x] `hook.rs` + `win/hook.rs` (`WH_MOUSE_LL` low-level mouse hook on dedicated Win32 message-loop thread + `GetCursorPos` 120 Hz sampler with `timeBeginPeriod(1)`)
+- [x] `recorder.rs` (`CursorRecorder`, `SystemInputLogger`, `NoopInputLogger` implementing `nss_core::InputLogger`)
+- [x] Port upstream tests (`NSSInputTests`, `CursorShapeTests`, `CursorMappingTests`, 21 tests incl. 120 Hz timer pacing test)
+- [x] Verify `./scripts/test.ps1` green, update `PLAN.md` & `progress.md`, commit Stage 6
 
 ---
 

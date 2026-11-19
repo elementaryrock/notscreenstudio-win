@@ -6,7 +6,6 @@
 
 use std::path::Path;
 use std::sync::Mutex;
-use std::time::Instant;
 
 use nss_core::{MediaTime, PixelSize, RecordingAssets, RecordingOptions, Rect, Size2};
 
@@ -95,15 +94,10 @@ pub fn is_pickable_window(
     is_on_screen && !is_cloaked && !is_tool && has_app && width >= 50.0 && height >= 50.0
 }
 
-/// Monotonic host clock in seconds, shared by every recorder of one session.
-///
-/// Upstream used `CMClockGetHostTimeClock`. The epoch here is the first call in this process, which
-/// is all the recorders need: they only ever compare and subtract these values.
+/// Monotonic host clock in seconds, shared by every recorder and input logger of one session.
 #[must_use]
 pub fn host_now() -> f64 {
-    static EPOCH: std::sync::OnceLock<Instant> = std::sync::OnceLock::new();
-    let epoch = *EPOCH.get_or_init(Instant::now);
-    epoch.elapsed().as_secs_f64()
+    nss_core::host_now()
 }
 
 /// Maps host-clock times onto the shared recording timeline (t = 0 is the first screen frame).

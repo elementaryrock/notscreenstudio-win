@@ -10,7 +10,8 @@
 use serde::de::{self, Visitor};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::fmt;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::sync::OnceLock;
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 /// Seconds from recording start (t = 0 is the first screen frame).
 pub type MediaTime = f64;
@@ -287,6 +288,15 @@ impl Size2 {
 }
 
 /// An instant, stored as seconds since the Swift/CoreFoundation reference date
+/// Monotonic process-wide host clock in seconds, shared by capture and input loggers so
+/// `RecordingAssets::start_host_time` and `InputLogger::stop` always speak the same clock.
+#[must_use]
+pub fn host_now() -> f64 {
+    static EPOCH: OnceLock<Instant> = OnceLock::new();
+    let epoch = *EPOCH.get_or_init(Instant::now);
+    epoch.elapsed().as_secs_f64()
+}
+
 /// (2001-01-01T00:00:00Z), which is exactly how Swift's `JSONEncoder` writes a `Date`
 /// by default (`deferredToDate`).
 #[derive(Debug, Clone, Copy, PartialEq, PartialOrd, Default)]
