@@ -28,7 +28,7 @@ use crate::recording::{RecordingAssets, RecordingOptions, RecordingState};
 
 pub type Result<T, E = NssError> = std::result::Result<T, E>;
 
-#[derive(Debug, Error)]
+#[derive(Debug, Clone, PartialEq, Eq, Error)]
 pub enum NssError {
     /// A code path that is declared but not built yet (upstream `notImplemented`).
     #[error("not implemented: {0}")]

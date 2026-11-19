@@ -2286,8 +2286,12 @@ name = "nss-capture"
 version = "0.1.0"
 dependencies = [
  "nss-core",
+ "parking_lot",
+ "serde",
  "tempfile",
  "thiserror 2.0.21",
+ "windows",
+ "windows-core",
 ]
 
 [[package]]

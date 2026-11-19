@@ -182,6 +182,8 @@ pub struct Rect {
 }
 
 impl Rect {
+    pub const ZERO: Rect = Rect::new(0.0, 0.0, 0.0, 0.0);
+
     pub const fn new(x: f64, y: f64, width: f64, height: f64) -> Self {
         Self {
             origin: Point2 { x, y },

@@ -45,6 +45,9 @@ proptest = "1"
 tempfile = "3"
 # Recycle Bin only (SHFileOperationW). Everything else uses `std`.
 windows-sys = { version = "0.61", default-features = false }
+# Win32 + WinRT bindings for nss-capture, nss-input and src-tauri shell helpers (ADR 0012).
+windows = { version = "0.62", default-features = false }
+windows-core = "0.62"
 
 [profile.dev]
 # Debug builds of the renderer are unusably slow; keep some optimisation in deps.

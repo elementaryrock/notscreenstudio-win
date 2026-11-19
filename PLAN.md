@@ -2,7 +2,7 @@
 
 Port of [`dotslashsimran/notscreenstudio`](https://github.com/dotslashsimran/notscreenstudio) (macOS 15, Swift 6 + SwiftUI + Metal, ~14.5k lines across 8 modules plus 499 tests) to a native-feeling Windows desktop app.
 
-Status: **plan, Stages 0-4 complete.** Upstream is vendored read-only at `_upstream/` for reference.
+Status: **plan, Stages 0-5 complete.** Upstream is vendored read-only at `_upstream/` for reference.
 
 | Stage | Status |
 |---|---|
@@ -11,8 +11,9 @@ Status: **plan, Stages 0-4 complete.** Upstream is vendored read-only at `_upstr
 | 2 — `nss-motion` | **done** |
 | 3 — `nss-project` | **done** |
 | 4 — `nss-render` | **done** |
-| 5 — `nss-capture` | next |
-| 6-11 | not started |
+| 5 — `nss-capture` | **done** |
+| 6 — `nss-input` | next |
+| 7-10 | not started |
 
 When a stage lands, flip its row and keep the notes in that stage's section accurate.
 
@@ -272,6 +273,8 @@ Four deviations, all deliberate:
 - Permissions: no macOS-style TCC screen permission exists; handle *only* camera/mic consent (Windows Settings privacy keys, readable via registry) and file-write failures.
 
 **Exit:** a 30 s recording of each source type produces a loadable `.nssproj` with correct `startHostTime`, source pixel size, and audio/video that stays in sync (< 1 frame drift over 5 min). `CaptureLogicTests`, `FrameGateTests`, `PauseTimelineTests`, `CaptureFilterTests` behaviours reproduced.
+
+**Status: done** (`crates/nss-capture`, 80 tests: 79 unit + 1 live hardware WGC test verified on Windows). Ported: `capture_math.rs`, `pause_clock.rs`, `frame_gate.rs`, `capture_filter.rs`, `capture_errors.rs`, `state_hub.rs`, `permissions.rs`, `catalog.rs`, `device.rs`, `writer.rs`, `recorder.rs` (`ScreenStreamPlan`, `WarmableRecordingSession`, `NoopRecordingSession`, `ScreenCaptureRecordingSession`), and confined `unsafe` Win32/WinRT adapters under `src/win/` (`enumerate.rs`, `exclusion.rs`, `permissions.rs`, `devices.rs`, `wgc.rs`). Recorded in **ADR 0012**; CI `unsafe` audit updated to permit only the audited FFI boundaries. CFR 60 Hz frame pacing in `RawVideoWriter` keeps static WGC desktops in lockstep with audio and pauses without gaps.
 
 ### Stage 6 — `nss-input` (replaces `NSSInput`)
 - `SystemInputLogger`: `WH_MOUSE_LL` hook (move/down/up, left/right/other) into a lock-free ring buffer; a `120 Hz` high-resolution timer samples `GetCursorPos` on a dedicated thread.
