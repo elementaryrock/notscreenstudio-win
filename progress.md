@@ -109,15 +109,15 @@ See [PLAN.md](./PLAN.md) for architecture, milestones, and invariants, and [CONT
 
 ---
 
-## Stage 7 — `nss-export` (NOT STARTED)
+## Stage 7 — `nss-export` (DONE)
 
-- [ ] `ffmpeg.rs` (FFmpeg discovery per ADR 0002: next to exe -> PATH -> structured missing-FFmpeg error with tested version + encoder capability detection `libx264`/`libx265`/hw fallback)
-- [ ] `frame_source.rs` (`AssetFrameSource`: FFmpeg demux/decode with exact **at-or-before** frame selection for screen & camera, bounded memory)
-- [ ] `audio_pump.rs` (`AudioPump`: trim + 48 kHz stereo resample + drift compensation + AAC 192 kbps)
-- [ ] `exporter.rs` (`MP4Exporter`: `t = trim.start + i / fps` -> `MotionModel::frame_state(t)` -> `AssetFrameSource` -> `FrameRenderer::render` -> FFmpeg child process `-movflags +faststart`, temp file + atomic rename on clean finish, progress callback + atomic cancel token)
-- [ ] Resolution presets (1080p / 4K by shorter side across 16:9, 1:1, 9:16)
-- [ ] Port upstream tests (`NSSExportTests`, `EndToEndExportTests`, `ParityTests` preview-vs-export byte/SSIM parity, cancel-leaves-no-file, `ffprobe` 60 fps check)
-- [ ] Verify `./scripts/test.ps1` green, update `PLAN.md` & `progress.md`, commit Stage 7
+- [x] `ffmpeg.rs` (FFmpeg/FFprobe discovery per ADR 0002: next to exe -> PATH -> structured missing-FFmpeg error with tested version 8.1.1 + encoder capability detection `libx264`/`libx265`/hw fallback)
+- [x] `frame_source.rs` (`AssetFrameSource`: FFmpeg demux/decode with exact **at-or-before** frame selection for screen & camera, bounded 2-frame memory, keyframe-aware backward/forward seeking)
+- [x] `audio_pump.rs` (`AudioMixPlan`: trim + 48 kHz stereo resample + drift compensation `async=1` + AAC 192 kbps)
+- [x] `exporter.rs` (`Mp4Exporter`: `t = trim.start + i / fps` -> `MotionModel::frame_state(t)` -> `AssetFrameSource` -> `FrameRenderer::render` -> FFmpeg child process `-movflags +faststart`, sibling temp file + atomic rename on clean finish, progress callback + atomic `CancelToken`)
+- [x] Resolution presets (1080p / 4K by shorter side across 16:9, 1:1, 9:16; H.264 & HEVC)
+- [x] Port upstream tests (`tests/export_parity.rs`: 13 real FFmpeg/wgpu tests + 4 unit tests covering 1080p/4K/HEVC/trim/slow-source/audio/cancel/missing-file/backward-seek/decode-failure/preview-vs-export frame-for-frame parity)
+- [x] Verify clippy & tests green, update `PLAN.md` & `progress.md`, commit Stage 7
 
 ---
 

@@ -6,12 +6,15 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 
-# Stage 7 adds: image (decode for frame sources).
 [dependencies]
 nss-core = { workspace = true }
 nss-motion = { workspace = true }
 nss-render = { workspace = true }
+parking_lot = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
 thiserror = { workspace = true }
+uuid = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }

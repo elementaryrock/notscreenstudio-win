@@ -2,7 +2,7 @@
 
 Port of [`dotslashsimran/notscreenstudio`](https://github.com/dotslashsimran/notscreenstudio) (macOS 15, Swift 6 + SwiftUI + Metal, ~14.5k lines across 8 modules plus 499 tests) to a native-feeling Windows desktop app.
 
-Status: **plan, Stages 0-6 complete.** Upstream is vendored read-only at `_upstream/` for reference.
+Status: **plan, Stages 0-7 complete.** Upstream is vendored read-only at `_upstream/` for reference.
 
 | Stage | Status |
 |---|---|
@@ -13,8 +13,9 @@ Status: **plan, Stages 0-6 complete.** Upstream is vendored read-only at `_upstr
 | 4 — `nss-render` | **done** |
 | 5 — `nss-capture` | **done** |
 | 6 — `nss-input` | **done** |
-| 7 — `nss-export` | next |
-| 8-10 | not started |
+| 7 — `nss-export` | **done** |
+| 8 — Shell (tray, HUD, hotkeys, overlays) | next |
+| 9-10 | not started |
 
 When a stage lands, flip its row and keep the notes in that stage's section accurate.
 
@@ -297,6 +298,8 @@ Four deviations, all deliberate:
 - Resolution presets: 1080p/4K by shorter side with the documented 16:9, 1:1, 9:16 sizes.
 
 **Exit:** `EndToEndExportTests` + `NSSExportTests` behaviours reproduced; an export equals the preview frame-for-frame on a fixture (SSIM ≥ 0.999 against the preview-rendered PNGs); cancel leaves no file; 60 fps output verified with `ffprobe`.
+
+**Status: done** (`crates/nss-export`, 17 tests: 4 unit + 13 FFmpeg/wgpu end-to-end parity tests). Ported: `ffmpeg.rs` (ADR 0002 discovery + `ffprobe` metadata/packet inspector + encoder capability detection), `frame_source.rs` (`AssetFrameSource` sequential keyframe-aware decoder enforcing exact **at-or-before** selection), `audio_pump.rs` (`AudioMixPlan` 48 kHz stereo drift-compensated AAC 192 kbps mux), `exporter.rs` (`Mp4Exporter`, `CancelToken`, sibling temp-file atomic replace, zero per-frame BGRA scratch reallocation). `#![forbid(unsafe_code)]`.
 
 ### Stage 8 — Shell: tray, HUD windows, hotkey, overlays
 - Tray icon with state (idle/recording/paused), tooltip with elapsed time, menu: Record, Pause/Resume, Stop, Permissions/Settings, Quit.
