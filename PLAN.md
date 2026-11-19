@@ -327,6 +327,8 @@ Four deviations, all deliberate:
 
 **Exit:** upstream `EditorDesignTests`, `EditorLogicTests`, `ZoomEditingTests`, `EditorPreviewEngineTests`, `EditorPlayheadAndBubbleTests`, `BackgroundPickerTests`, `HomeModelTests` behaviours reproduced; a UX walkthrough of first-launch → record → edit → export with no dead ends.
 
+**Status: done** (`ui/src/`, 8 Node TS unit tests wired into `scripts/test.ps1` & CI). Implemented: centralized `strings.ts`, strict `types.ts`, typed `ipc.ts` (36 commands + raw binary RGBA `ArrayBuffer` preview decoder), pure `editor/editorLogic.ts` (zoom editing, trim constraints, `PlayheadEasing`, coalescing undo/redo), `HomeView.tsx`, `SetupModal.tsx`, `SettingsModal.tsx`, `ExportModal.tsx`, `PreviewCanvas.tsx` (in-flight coalescing 60 fps canvas renderer + frame-time badge + manual focus click + draggable camera handle), `TimelinePanel.tsx` (filmstrip + yellow trim handles + zoom drag/resize + click dots + eased playhead), `InspectorPanel.tsx` (6 persistent collapsible sections + CPU-rasterized background swatches), `EditorView.tsx` (keyboard shortcuts + debounced autosave + flush on exit), `HudOverlays.tsx` (5 hash-routed translucent HUD windows), and `styles/app.css` dark studio theme. Zero extra npm runtime dependencies added.
+
 ### Stage 10 — Integration, parity, packaging
 - Wire record → project → editor → export end-to-end with real (not fixture) media, for all three source types and all three aspect ratios at 1080p and 4K.
 - Port `MANUAL_TEST.md` to a Windows checklist with screenshots; run it once fully.

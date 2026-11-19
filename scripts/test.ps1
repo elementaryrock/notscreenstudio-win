@@ -1,4 +1,4 @@
-param([switch]$Fast)
+﻿param([switch]$Fast)
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
@@ -35,6 +35,7 @@ if (-not (Test-Path "ui/node_modules")) {
 }
 
 Step "ui typecheck" { npm --prefix ui run typecheck }
+Step "ui test" { npm --prefix ui run test }
 
 if (-not $Fast) {
     Step "ui build" { npm --prefix ui run build }

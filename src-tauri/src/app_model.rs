@@ -47,7 +47,7 @@ use crate::tray;
 use crate::win_shell::{self, GlobalHotKeyManager, HotKeyAction, HotKeyRegistrationStatus};
 
 /// Current implementation stage reported to the UI.
-pub const PORT_STAGE: u32 = 8;
+pub const PORT_STAGE: u32 = 9;
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]

@@ -51,9 +51,10 @@ jobs:
       - name: Install UI deps
         run: npm --prefix ui ci
 
-      - name: UI typecheck and build
+      - name: UI typecheck, test and build
         run: |
           npm --prefix ui run typecheck
+          npm --prefix ui run test
           npm --prefix ui run build
 
       - name: Build app

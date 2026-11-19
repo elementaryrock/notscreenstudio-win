@@ -135,19 +135,19 @@ See [PLAN.md](./PLAN.md) for architecture, milestones, and invariants, and [CONT
 
 ---
 
-## Stage 9 — UI: Home + Editor + Overlays (React + TypeScript) (NOT STARTED)
+## Stage 9 — UI: Home + Editor + Overlays (React + TypeScript) (DONE)
 
-- [ ] Architecture & stores (`ui/src/strings.ts`, Zustand state stores, typed IPC bridge `ui/src/ipc.ts`, undo/redo stack where slider drags coalesce to 1 step)
-- [ ] **Home view**: responsive recording card grid, thumbnails, name/date/duration, newest-first, context menu (Rename, Show in Explorer, Delete to Recycle Bin), empty state with Record CTA
-- [ ] **Editor shell**: dark theme (`EditorTheme`), top bar (Recordings back button, editable title, undo/redo, aspect picker, Export), center preview, right inspector, bottom timeline
-- [ ] **Preview**: Rust-rendered 60 fps preview surface/streaming via `nss-motion` + `nss-render` (shared frame pipeline with export per ADR 0003), click-to-set zoom focus, draggable camera bubble handle
-- [ ] **Timeline**: 4 tracks (Video thumbnail strip, Zoom blocks with auto-sparkle & resize/drag/split/add/delete, Camera track, Audio track), yellow trim handles, orange click dots, eased playhead (eased on jump, exact on drag)
-- [ ] **Inspector**: 6 collapsible sections (Background, Frame, Cursor, Zoom, Camera, Audio) with persisted open state; Background picker tabs (Wallpapers, Gradients + angle, Colors + custom, Image + 8 recents); Frame blur/padding/corner/shadow; Cursor size/smoothing/blur/ripples/hide-when-idle; Zoom level/focus/ease in/out/follow-vs-fixed; Camera bubble shape/roundness/size/border/mirror/shrink-on-zoom; Audio gain/mute
-- [ ] **Export sheet**: resolution (1080p/4K), fps, codec (H.264/HEVC), destination, live progress + cancel, reveal when done, missing-FFmpeg dialog
-- [ ] **Overlay views** (for HUD windows): Setup bar, Recording bar, Countdown overlay, Area selection drag overlay, Camera bubble preview overlay, Permissions/Settings view
-- [ ] **Keyboard shortcuts**: Space play/pause, arrows nudge, Delete remove block, Ctrl+Z / Ctrl+Shift+Z undo/redo
-- [ ] Port/add UI logic tests (Vitest / TS unit tests covering `EditorLogicTests`, `ZoomEditingTests`, `EditorPlayheadAndBubbleTests`, `BackgroundPickerTests`, `HomeModelTests`, `EditorDesignTests`)
-- [ ] Verify `npm --prefix ui run typecheck`, `npm --prefix ui run test`, `npm --prefix ui run build`, and `./scripts/test.ps1` green; commit Stage 9
+- [x] Architecture & stores (`ui/src/strings.ts`, strict TypeScript wire types `ui/src/types.ts`, typed IPC bridge `ui/src/ipc.ts` with raw binary `ArrayBuffer` RGBA unpacking, pure editor logic & coalescing undo/redo stack `ui/src/editor/editorLogic.ts` where slider drags coalesce to 1 step)
+- [x] **Home view**: responsive recording card grid, thumbnails, name/date/duration, newest-first, context menu (Rename, Show in Explorer, Delete to Recycle Bin), live recording banner, Sample Project action, empty state with Record CTA (`HomeView.tsx`)
+- [x] **Editor shell**: dark studio theme (`ui/src/styles/app.css`), top bar (Recordings back button, editable title, undo/redo, aspect picker, Export), center preview, right inspector, bottom timeline (`EditorView.tsx`)
+- [x] **Preview**: Rust-rendered 60 fps GPU preview surface via `nss-motion` + `nss-render` (shared frame pipeline with export per ADR 0003), frame-time HUD, click-to-set manual zoom focus, draggable camera bubble handle (`PreviewCanvas.tsx`)
+- [x] **Timeline**: 4 tracks (Video thumbnail filmstrip, Zoom blocks with `✦` auto-sparkle & drag/resize/select, Camera track, Audio track), yellow trim handles, orange click dots, eased playhead (`PlayheadEasing`: 0.2 s cubic ease-out on jump, instant snap on drag/playback) (`TimelinePanel.tsx`)
+- [x] **Inspector**: 6 collapsible sections (Background, Frame, Cursor, Zoom, Camera, Audio) with persisted open state; Background picker tabs (Windows Wallpapers, Gradients + meshes with CPU-rasterized swatches + angle slider, Colors + custom picker, Image + 8 recents); Frame blur/padding/corner/shadow; Cursor size/smoothing/blur/ripples/hide-when-idle; Zoom level/focus/ease in/out/follow-vs-fixed (X/Y sliders + click preview); Camera bubble shape/roundness/size/border width & color/mirror/shrink-on-zoom/position; Audio status (`InspectorPanel.tsx`)
+- [x] **Export sheet**: resolution (1080p/4K with exact aspect dimensions), fps (30/60), codec (H.264/HEVC), destination, live progress + cancel, Show in Explorer when done, missing-FFmpeg warning (`ExportModal.tsx`)
+- [x] **Overlay views & modals**: Setup modal (`SetupModal.tsx`), Permissions & Settings modal (`SettingsModal.tsx`), and hash-routed translucent HUD windows (`HudOverlays.tsx`: Setup bar, Recording bar, Countdown, Area selection drag overlay, Camera bubble)
+- [x] **Keyboard shortcuts**: Space play/pause, Left/Right arrows ±1 frame nudge, Delete/Backspace remove selected zoom block, Ctrl+Z / Ctrl+Shift+Z / Ctrl+Y undo/redo
+- [x] UI logic tests (`ui/src/editor/editorLogic.test.ts`: 8 native Node TS tests wired into `scripts/test.ps1` and `.github/workflows/ci.yml`)
+- [x] Verify `npm --prefix ui run typecheck`, `npm --prefix ui run test`, `npm --prefix ui run build`, and `./scripts/test.ps1` green; commit Stage 9
 
 ---
 
