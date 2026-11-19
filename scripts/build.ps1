@@ -33,9 +33,20 @@ if ($env:NSS_SKIP_SMOKE -ne "1") {
     Write-Host "==> Smoke test skipped (NSS_SKIP_SMOKE=1)" -ForegroundColor Yellow
 }
 
+if (-not (Test-Path "ui/node_modules")) {
+    Write-Host "==> Installing UI dependencies" -ForegroundColor Cyan
+    npm --prefix ui install
+    if ($LASTEXITCODE -ne 0) { throw "npm install failed" }
+}
+
 Write-Host "==> Bundling installers" -ForegroundColor Cyan
 $bundles = if ($env:NSS_BUNDLES) { $env:NSS_BUNDLES } else { "msi,nsis" }
-cargo tauri build --bundles $bundles
+$localTauri = Join-Path $root "ui/node_modules/.bin/tauri.cmd"
+if (Test-Path $localTauri) {
+    & $localTauri build --bundles $bundles
+} else {
+    cargo tauri build --bundles $bundles
+}
 if ($LASTEXITCODE -ne 0) { throw "bundle failed" }
 
 Write-Host ""

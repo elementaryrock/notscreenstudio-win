@@ -20,4 +20,10 @@ if (-not (Test-Path "ui/node_modules")) {
 }
 
 Write-Host "Starting notscreenstudio (dev)..." -ForegroundColor Cyan
-cargo tauri dev
+$localTauri = Join-Path $root "ui/node_modules/.bin/tauri.cmd"
+if (Test-Path $localTauri) {
+    & $localTauri dev
+} else {
+    cargo tauri dev
+}
+if ($LASTEXITCODE -ne 0) { throw "tauri dev failed" }
