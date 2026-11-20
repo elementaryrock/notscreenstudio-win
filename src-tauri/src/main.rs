@@ -6,6 +6,15 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 #![deny(unsafe_code)]
 
+// Prevent ever shipping a release binary that points at `http://localhost:1420` instead of
+// embedding `ui/dist` via Tauri's `custom-protocol` feature.
+#[cfg(all(not(debug_assertions), dev))]
+compile_error!(
+    "Release builds of notscreenstudio must enable `custom-protocol` (run `tauri build` or \
+     `cargo build --release -p notscreenstudio-win-app --features custom-protocol`) so the UI is \
+     embedded inside the standalone EXE."
+);
+
 mod app_model;
 mod overlay;
 mod preview;
@@ -14,8 +23,53 @@ mod shell_model;
 mod tray;
 mod win_shell;
 
+use std::path::PathBuf;
+
 use app_model::AppState;
 use tauri::{Manager, RunEvent, WindowEvent};
+
+fn error_log_path() -> PathBuf {
+    std::env::var_os("LOCALAPPDATA")
+        .map(PathBuf::from)
+        .unwrap_or_else(std::env::temp_dir)
+        .join("notscreenstudio")
+        .join("last-error.log")
+}
+
+fn record_fatal_error(detail: &str, show_dialog: bool) {
+    let log_path = error_log_path();
+    if let Some(parent) = log_path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let _ = std::fs::write(&log_path, detail);
+    eprintln!("notscreenstudio fatal error: {detail}");
+
+    if show_dialog && std::env::var_os("NSS_NO_ERROR_DIALOG").is_none() {
+        let hint = if detail.contains("WebView2") || detail.contains("0x80070002") {
+            "\n\nPlease make sure Microsoft Edge WebView2 Runtime is installed and no other copy of notscreenstudio is locked in the background."
+        } else {
+            ""
+        };
+        let msg = format!(
+            "notscreenstudio could not start.\n\n{detail}{hint}\n\nDetails were saved to:\n{}",
+            log_path.display()
+        );
+        win_shell::show_error_dialog("notscreenstudio — Startup Error", &msg);
+    }
+}
+
+fn configure_dev_webview_profile() {
+    #[cfg(dev)]
+    if std::env::var_os("WEBVIEW2_USER_DATA_FOLDER").is_none() {
+        if let Some(local) = std::env::var_os("LOCALAPPDATA") {
+            let dev_dir = PathBuf::from(local)
+                .join("dev.notscreenstudio.app")
+                .join("EBWebView-dev");
+            // Called once on the main thread before any worker threads or WebView2 start.
+            std::env::set_var("WEBVIEW2_USER_DATA_FOLDER", dev_dir);
+        }
+    }
+}
 
 fn main() {
     win_shell::enable_per_monitor_dpi_awareness();
@@ -35,9 +89,30 @@ fn main() {
         }
     }
 
+    configure_dev_webview_profile();
+
+    #[cfg(dev)]
+    const INSTANCE_MUTEX: &str = "Local\\notscreenstudio-dev-instance-v1";
+    #[cfg(not(dev))]
+    const INSTANCE_MUTEX: &str = "Local\\notscreenstudio-app-instance-v1";
+
+    let Some(_instance_guard) = win_shell::SingleInstanceGuard::acquire(INSTANCE_MUTEX) else {
+        win_shell::focus_existing_main_window("notscreenstudio");
+        return;
+    };
+
+    #[cfg(not(debug_assertions))]
+    {
+        let prev_hook = std::panic::take_hook();
+        std::panic::set_hook(Box::new(move |info| {
+            record_fatal_error(&info.to_string(), true);
+            prev_hook(info);
+        }));
+    }
+
     let state = AppState::new();
 
-    let app = tauri::Builder::default()
+    let app = match tauri::Builder::default()
         .manage(state)
         .setup(|app| {
             let handle = app.handle().clone();
@@ -112,7 +187,16 @@ fn main() {
             _ => {}
         })
         .build(tauri::generate_context!())
-        .expect("failed to build the notscreenstudio shell");
+    {
+        Ok(app) => app,
+        Err(e) => {
+            record_fatal_error(
+                &format!("Failed to initialize the notscreenstudio shell: {e}"),
+                !cfg!(debug_assertions),
+            );
+            std::process::exit(1);
+        }
+    };
 
     app.run(|handle, event| {
         if let RunEvent::Exit = event {

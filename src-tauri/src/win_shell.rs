@@ -13,15 +13,18 @@ use std::sync::{mpsc, Arc};
 use std::thread::{self, JoinHandle};
 
 #[cfg(windows)]
-use windows::core::{PCWSTR, PWSTR};
+use windows::core::{BOOL, PCWSTR, PWSTR};
 #[cfg(windows)]
-use windows::Win32::Foundation::{HWND, LPARAM, RPC_E_CHANGED_MODE, WPARAM};
+use windows::Win32::Foundation::{
+    CloseHandle, GetLastError, ERROR_ALREADY_EXISTS, HANDLE, HWND, LPARAM, RPC_E_CHANGED_MODE,
+    WPARAM,
+};
 #[cfg(windows)]
 use windows::Win32::System::Com::{
     CoInitializeEx, CoTaskMemFree, CoUninitialize, COINIT_APARTMENTTHREADED, COINIT_DISABLE_OLE1DDE,
 };
 #[cfg(windows)]
-use windows::Win32::System::Threading::GetCurrentThreadId;
+use windows::Win32::System::Threading::{CreateMutexW, GetCurrentProcessId, GetCurrentThreadId};
 #[cfg(windows)]
 use windows::Win32::UI::HiDpi::{
     SetProcessDpiAwarenessContext, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2,
@@ -38,9 +41,11 @@ use windows::Win32::UI::Shell::{
 };
 #[cfg(windows)]
 use windows::Win32::UI::WindowsAndMessaging::{
-    GetMessageW, GetWindowLongPtrW, PeekMessageW, PostThreadMessageW, SetWindowDisplayAffinity,
-    SetWindowLongPtrW, GWL_EXSTYLE, MSG, PM_NOREMOVE, WDA_EXCLUDEFROMCAPTURE, WM_HOTKEY, WM_QUIT,
-    WS_EX_APPWINDOW, WS_EX_TOOLWINDOW,
+    EnumWindows, GetMessageW, GetWindowLongPtrW, GetWindowTextLengthW, GetWindowTextW,
+    GetWindowThreadProcessId, IsIconic, MessageBoxW, PeekMessageW, PostThreadMessageW,
+    SetForegroundWindow, SetWindowDisplayAffinity, SetWindowLongPtrW, ShowWindow, GWL_EXSTYLE,
+    MB_ICONERROR, MB_OK, MSG, PM_NOREMOVE, SW_RESTORE, SW_SHOW, WDA_EXCLUDEFROMCAPTURE, WM_HOTKEY,
+    WM_QUIT, WS_EX_APPWINDOW, WS_EX_TOOLWINDOW,
 };
 
 /// Ensures the process runs under Per-Monitor DPI Awareness v2 before any monitor enumeration or
@@ -53,6 +58,145 @@ pub fn enable_per_monitor_dpi_awareness() {
         unsafe {
             let _ = SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
         }
+    }
+}
+
+/// Process-lifetime Win32 named mutex guard ensuring only one instance of the app holds the
+/// shared WebView2 profile and global hotkeys at a time.
+pub struct SingleInstanceGuard {
+    #[cfg(windows)]
+    handle: HANDLE,
+}
+
+impl SingleInstanceGuard {
+    /// Attempts to claim the named mutex. Returns `None` if another instance already holds it.
+    #[must_use]
+    pub fn acquire(mutex_name: &str) -> Option<Self> {
+        #[cfg(windows)]
+        {
+            let wide: Vec<u16> = mutex_name
+                .encode_utf16()
+                .chain(std::iter::once(0))
+                .collect();
+            // SAFETY: `wide` is null-terminated; returned handle is checked and closed on Drop.
+            unsafe {
+                match CreateMutexW(None, false, PCWSTR(wide.as_ptr())) {
+                    Ok(handle) => {
+                        if GetLastError() == ERROR_ALREADY_EXISTS {
+                            let _ = CloseHandle(handle);
+                            return None;
+                        }
+                        Some(Self { handle })
+                    }
+                    // Fail open if mutex creation is unexpectedly denied so startup is never blocked.
+                    Err(_) => Some(Self {
+                        handle: HANDLE::default(),
+                    }),
+                }
+            }
+        }
+        #[cfg(not(windows))]
+        {
+            let _ = mutex_name;
+            Some(Self {})
+        }
+    }
+}
+
+impl Drop for SingleInstanceGuard {
+    fn drop(&mut self) {
+        #[cfg(windows)]
+        if !self.handle.0.is_null() {
+            // SAFETY: handle was acquired by `CreateMutexW` in `SingleInstanceGuard::acquire`.
+            unsafe {
+                let _ = CloseHandle(self.handle);
+            }
+        }
+    }
+}
+
+/// Restores and focuses an existing top-level window with exact title `expected_title` belonging
+/// to another process (including windows hidden to the system tray).
+pub fn focus_existing_main_window(expected_title: &str) -> bool {
+    #[cfg(windows)]
+    {
+        struct SearchCtx<'a> {
+            expected_title: &'a str,
+            own_pid: u32,
+            found: Option<HWND>,
+        }
+
+        unsafe extern "system" fn callback(hwnd: HWND, lparam: LPARAM) -> BOOL {
+            let ctx = &mut *(lparam.0 as *mut SearchCtx<'_>);
+            let mut pid: u32 = 0;
+            let _ = GetWindowThreadProcessId(hwnd, Some(&mut pid));
+            if pid == 0 || pid == ctx.own_pid {
+                return BOOL(1);
+            }
+            let len = GetWindowTextLengthW(hwnd);
+            if len <= 0 {
+                return BOOL(1);
+            }
+            let mut buf = vec![0u16; (len as usize) + 1];
+            let copied = GetWindowTextW(hwnd, &mut buf);
+            if copied <= 0 {
+                return BOOL(1);
+            }
+            let title = String::from_utf16_lossy(&buf[..copied as usize]);
+            if title == ctx.expected_title {
+                ctx.found = Some(hwnd);
+                return BOOL(0);
+            }
+            BOOL(1)
+        }
+
+        // SAFETY: `ctx` lives for the entire synchronous `EnumWindows` call; `ShowWindow` and
+        // `SetForegroundWindow` operate on the matched HWND.
+        unsafe {
+            let mut ctx = SearchCtx {
+                expected_title,
+                own_pid: GetCurrentProcessId(),
+                found: None,
+            };
+            let _ = EnumWindows(Some(callback), LPARAM((&raw mut ctx) as isize));
+            if let Some(hwnd) = ctx.found {
+                let _ = ShowWindow(hwnd, SW_SHOW);
+                if IsIconic(hwnd).as_bool() {
+                    let _ = ShowWindow(hwnd, SW_RESTORE);
+                }
+                let _ = SetForegroundWindow(hwnd);
+                return true;
+            }
+        }
+        false
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = expected_title;
+        false
+    }
+}
+
+/// Displays a native Windows error dialog for fatal startup errors when running under
+/// `windows_subsystem = "windows"` (where stderr is not attached to a console).
+pub fn show_error_dialog(title: &str, message: &str) {
+    #[cfg(windows)]
+    {
+        let title_w: Vec<u16> = title.encode_utf16().chain(std::iter::once(0)).collect();
+        let msg_w: Vec<u16> = message.encode_utf16().chain(std::iter::once(0)).collect();
+        // SAFETY: both buffers are valid null-terminated UTF-16 strings for the call's duration.
+        unsafe {
+            let _ = MessageBoxW(
+                None,
+                PCWSTR(msg_w.as_ptr()),
+                PCWSTR(title_w.as_ptr()),
+                MB_OK | MB_ICONERROR,
+            );
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        eprintln!("{title}: {message}");
     }
 }
 
@@ -405,5 +549,19 @@ mod tests {
         // Bare letter without modifier is rejected so typing cannot trigger a global hotkey.
         assert_eq!(HotKeyChord::parse("R"), None);
         assert_eq!(HotKeyChord::parse(""), None);
+    }
+
+    #[test]
+    fn single_instance_guard_blocks_duplicate_until_dropped() {
+        let name = format!("Local\\nss-test-single-instance-{}", std::process::id());
+        let first = SingleInstanceGuard::acquire(&name);
+        assert!(first.is_some());
+        #[cfg(windows)]
+        {
+            assert!(SingleInstanceGuard::acquire(&name).is_none());
+        }
+        drop(first);
+        let after_drop = SingleInstanceGuard::acquire(&name);
+        assert!(after_drop.is_some());
     }
 }

@@ -29,8 +29,11 @@ Run from PowerShell at the repository root:
 ```powershell
 ./scripts/dev.ps1      # hot-reload Tauri + Vite dev loop
 ./scripts/test.ps1     # full CI gate: fmt, clippy, cargo test, UI typecheck/test/build, smoke test
-./scripts/build.ps1    # release build, smoke test, MSI + NSIS installers
+./scripts/build.ps1    # standalone portable EXE (with embedded UI), isolated smoke test, MSI + NSIS installers
+./scripts/release.ps1  # full test + standalone live EXE verification + GitHub Release publish
 ```
+
+Pushing a version tag (`git tag v0.1.0 && git push origin v0.1.0`) also triggers `.github/workflows/release.yml` to build and attach `notscreenstudio.exe`, Windows installers, and `SHA256SUMS.txt` automatically.
 
 Headless self-check (no GUI session needed):
 

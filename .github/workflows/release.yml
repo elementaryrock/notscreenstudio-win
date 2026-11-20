@@ -1,0 +1,81 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag to publish (e.g. v0.1.1)"
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  build-and-release:
+    name: Build Windows Standalone EXE & Installers
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Rust version
+        run: rustc --version && cargo --version
+
+      - uses: Swatinem/rust-cache@v2
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: ui/package-lock.json
+
+      - name: Install UI dependencies
+        run: npm --prefix ui ci
+
+      - name: Build & verify standalone EXE and Windows installers
+        shell: pwsh
+        run: ./scripts/build.ps1
+
+      - name: Publish GitHub Release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $tag = if ("${{ inputs.tag }}") { "${{ inputs.tag }}" } else { "${{ github.ref_name }}" }
+          $title = "$tag — Windows Release"
+          $notesFile = Join-Path $env:RUNNER_TEMP "release-notes.md"
+          $notesTemplate = @'
+          ## notscreenstudio for Windows (__TAG__)
+
+          A free, completely offline Windows screen recorder and studio editor with automatic zoom, smooth spring-interpolated cursor physics, and GPU-accelerated video composition — ported to Windows from macOS [notscreenstudio](https://github.com/dotslashsimran/notscreenstudio).
+
+          ### Downloads
+          - **`notscreenstudio.exe`** — Standalone portable Windows x64 executable (double-click to run directly, UI fully embedded).
+          - **Installers** (`.msi` / `-setup.exe`) — Standard Windows installers.
+          - **`SHA256SUMS.txt`** — SHA-256 checksums.
+
+          ### Requirements
+          - **OS:** Windows 10 (2004 / build 19041+) or Windows 11 (x64)
+          - **WebView2:** Microsoft Edge WebView2 Runtime (preinstalled on Windows 11 and modern Windows 10)
+          - **FFmpeg:** [FFmpeg](https://www.gyan.dev/ffmpeg/builds/) on `PATH` (`winget install Gyan.FFmpeg`) or `ffmpeg.exe` & `ffprobe.exe` placed next to `notscreenstudio.exe`.
+          '@
+          $notesTemplate.Replace("__TAG__", $tag) | Set-Content -Path $notesFile -Encoding utf8
+
+          $assets = Get-ChildItem -Path "dist-release" -File | Select-Object -ExpandProperty FullName
+          $exists = $true
+          gh release view $tag 2>$null | Out-Null
+          if ($LASTEXITCODE -ne 0) { $exists = $false }
+
+          if ($exists) {
+            gh release edit $tag --title $title --notes-file $notesFile
+            gh release upload $tag @assets --clobber
+          } else {
+            gh release create $tag @assets --title $title --notes-file $notesFile
+          }

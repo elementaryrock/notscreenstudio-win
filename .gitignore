@@ -15,6 +15,7 @@ src-tauri/gen/
 # Build outputs
 build/
 dist/
+dist-release/
 *.msi
 *.exe
 

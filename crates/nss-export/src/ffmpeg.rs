@@ -375,11 +375,50 @@ fn find_binary(stem: &str) -> Result<PathBuf, NssError> {
         .stderr(Stdio::null());
     #[cfg(windows)]
     cmd.creation_flags(CREATE_NO_WINDOW);
-    match cmd.status() {
-        Ok(st) if st.success() => Ok(PathBuf::from(name)),
-        _ => Err(NssError::Unsupported(format!(
-            "FFmpeg is required for export and playback (tested with FFmpeg {TESTED_FFMPEG_VERSION}). \
-             Place ffmpeg.exe and ffprobe.exe next to the app or install FFmpeg on PATH ({FFMPEG_DOWNLOAD_URL})."
-        ))),
+    if let Ok(st) = cmd.status() {
+        if st.success() {
+            return Ok(PathBuf::from(name));
+        }
     }
+    #[cfg(windows)]
+    if let Some(found) = fallback_windows_binary(&name) {
+        return Ok(found);
+    }
+    Err(NssError::Unsupported(format!(
+        "FFmpeg is required for export and playback (tested with FFmpeg {TESTED_FFMPEG_VERSION}). \
+         Place ffmpeg.exe and ffprobe.exe next to the app or install FFmpeg on PATH ({FFMPEG_DOWNLOAD_URL})."
+    )))
+}
+
+#[cfg(windows)]
+fn fallback_windows_binary(exe_name: &str) -> Option<PathBuf> {
+    let mut candidates = Vec::new();
+    if let Some(local) = std::env::var_os("LOCALAPPDATA") {
+        let local = PathBuf::from(local);
+        candidates.push(local.join("notscreenstudio").join("ffmpeg").join(exe_name));
+        candidates.push(
+            local
+                .join("Microsoft")
+                .join("WinGet")
+                .join("Links")
+                .join(exe_name),
+        );
+    }
+    if let Some(prog_data) = std::env::var_os("ProgramData") {
+        candidates.push(
+            PathBuf::from(prog_data)
+                .join("chocolatey")
+                .join("bin")
+                .join(exe_name),
+        );
+    }
+    if let Some(profile) = std::env::var_os("USERPROFILE") {
+        candidates.push(
+            PathBuf::from(profile)
+                .join("scoop")
+                .join("shims")
+                .join(exe_name),
+        );
+    }
+    candidates.into_iter().find(|p| p.is_file())
 }

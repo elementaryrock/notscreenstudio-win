@@ -20,15 +20,18 @@ use std::os::windows::process::CommandExt;
 #[cfg(windows)]
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
-/// Locates `ffmpeg` per ADR 0002: next to the running executable first, then `PATH`.
+/// Locates `ffmpeg`: next to the running executable first, then `PATH`, then common Windows
+/// package-manager install directories (so a freshly installed WinGet/Scoop/Choco FFmpeg works
+/// even before Explorer refreshes its environment).
 pub fn find_ffmpeg() -> Result<PathBuf, NssError> {
+    let exe_name = if cfg!(windows) {
+        "ffmpeg.exe"
+    } else {
+        "ffmpeg"
+    };
     if let Ok(exe) = std::env::current_exe() {
         if let Some(dir) = exe.parent() {
-            let bundled = dir.join(if cfg!(windows) {
-                "ffmpeg.exe"
-            } else {
-                "ffmpeg"
-            });
+            let bundled = dir.join(exe_name);
             if bundled.is_file() {
                 return Ok(bundled);
             }
@@ -42,14 +45,52 @@ pub fn find_ffmpeg() -> Result<PathBuf, NssError> {
         .stderr(Stdio::null());
     #[cfg(windows)]
     cmd.creation_flags(CREATE_NO_WINDOW);
-    let probe = cmd.status();
-    match probe {
-        Ok(st) if st.success() => Ok(PathBuf::from("ffmpeg")),
-        _ => Err(NssError::Unsupported(
-            "FFmpeg was not found. Place ffmpeg.exe next to the app or install FFmpeg 8+ on PATH."
-                .into(),
-        )),
+    if let Ok(st) = cmd.status() {
+        if st.success() {
+            return Ok(PathBuf::from("ffmpeg"));
+        }
     }
+    #[cfg(windows)]
+    if let Some(found) = fallback_windows_binary(exe_name) {
+        return Ok(found);
+    }
+    Err(NssError::Unsupported(
+        "FFmpeg was not found. Place ffmpeg.exe next to the app or install FFmpeg 8+ on PATH."
+            .into(),
+    ))
+}
+
+#[cfg(windows)]
+fn fallback_windows_binary(exe_name: &str) -> Option<PathBuf> {
+    let mut candidates = Vec::new();
+    if let Some(local) = std::env::var_os("LOCALAPPDATA") {
+        let local = PathBuf::from(local);
+        candidates.push(local.join("notscreenstudio").join("ffmpeg").join(exe_name));
+        candidates.push(
+            local
+                .join("Microsoft")
+                .join("WinGet")
+                .join("Links")
+                .join(exe_name),
+        );
+    }
+    if let Some(prog_data) = std::env::var_os("ProgramData") {
+        candidates.push(
+            PathBuf::from(prog_data)
+                .join("chocolatey")
+                .join("bin")
+                .join(exe_name),
+        );
+    }
+    if let Some(profile) = std::env::var_os("USERPROFILE") {
+        candidates.push(
+            PathBuf::from(profile)
+                .join("scoop")
+                .join("shims")
+                .join(exe_name),
+        );
+    }
+    candidates.into_iter().find(|p| p.is_file())
 }
 
 /// Configuration for [`RawVideoWriter`].
